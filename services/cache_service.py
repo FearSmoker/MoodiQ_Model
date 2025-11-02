@@ -13,7 +13,6 @@ import redis.asyncio as redis
 import os
 import json
 from typing import Optional, Any, Dict
-from datetime import datetime
 
 
 # Global Redis client
@@ -23,46 +22,68 @@ redis_client: Optional[redis.Redis] = None
 async def connect_redis():
     """
     Connect to Redis server with error handling and retry logic.
+    Supports both local Redis and Upstash Redis.
+    Requires redis>=5.0.1 for asyncio support.
     """
     global redis_client
     
+    # Check if caching is enabled
+    if os.getenv('ENABLE_CACHE', 'true').lower() != 'true':
+        print("ℹ️  Caching is disabled (ENABLE_CACHE=false)")
+        redis_client = None
+        return None
+    
     try:
         # Get Redis configuration from environment
+        redis_url = os.getenv('REDIS_URL')
         redis_host = os.getenv('REDIS_HOST', 'localhost')
         redis_port = int(os.getenv('REDIS_PORT', '6379'))
         redis_password = os.getenv('REDIS_PASSWORD', None)
-        redis_url = os.getenv('REDIS_URL')
         
-        # Construct Redis URL if not provided
-        if not redis_url:
+        # Prefer REDIS_URL if provided (for Upstash and other cloud Redis)
+        if redis_url:
+            print(f"🔄 Connecting to Redis using REDIS_URL...")
+            # Parse host from URL for display purposes
+            if 'upstash.io' in redis_url:
+                print(f"   Provider: Upstash Redis (Cloud)")
+            else:
+                print(f"   Using connection URL")
+        else:
+            # Construct Redis URL from components
+            print(f"🔄 Connecting to Redis at {redis_host}:{redis_port}...")
             if redis_password:
                 redis_url = f"redis://:{redis_password}@{redis_host}:{redis_port}"
             else:
                 redis_url = f"redis://{redis_host}:{redis_port}"
         
-        print(f"🔄 Connecting to Redis at {redis_host}:{redis_port}...")
-        
         # Create Redis client with connection pool
+        # Upstash-compatible settings
         redis_client = redis.from_url(
             redis_url,
             encoding="utf-8",
             decode_responses=True,
-            socket_connect_timeout=5,
+            socket_connect_timeout=10,  # Increased for cloud Redis
+            socket_timeout=10,  # Increased for cloud Redis
             socket_keepalive=True,
             health_check_interval=30,
-            max_connections=50
+            max_connections=20,  # Lower for cloud Redis to avoid connection limits
+            retry_on_timeout=True,  # Auto-retry on timeout
+            retry_on_error=[redis.ConnectionError, redis.TimeoutError]  # Auto-retry on errors
         )
         
         # Test connection
         await redis_client.ping()
         
         # Get Redis info
-        info = await redis_client.info('server')
-        redis_version = info.get('redis_version', 'unknown')
-        
-        print(f"✅ Connected to Redis successfully")
-        print(f"   Version: {redis_version}")
-        print(f"   Host: {redis_host}:{redis_port}")
+        try:
+            info = await redis_client.info('server')
+            redis_version = info.get('redis_version', 'unknown')
+            print(f"✅ Connected to Redis successfully")
+            print(f"   Redis Server Version: {redis_version}")
+        except Exception:
+            # Upstash might restrict INFO command
+            print(f"✅ Connected to Redis successfully")
+            print(f"   (Cloud Redis - INFO command restricted)")
         
         return redis_client
         
@@ -72,8 +93,15 @@ async def connect_redis():
         redis_client = None
         return None
         
+    except redis.TimeoutError as e:
+        print(f"❌ Redis connection timeout: {e}")
+        print("   Check your network connection and Redis URL")
+        redis_client = None
+        return None
+        
     except Exception as e:
         print(f"❌ Unexpected error connecting to Redis: {e}")
+        print(f"   Error type: {type(e).__name__}")
         redis_client = None
         return None
 
@@ -354,6 +382,7 @@ async def increment(key: str, amount: int = 1) -> Optional[int]:
 async def get_cache_stats() -> Dict[str, Any]:
     """
     Get Redis cache statistics and information.
+    Compatible with both local Redis and Upstash (which may restrict INFO commands).
     
     Returns:
         Dictionary with cache statistics
@@ -365,33 +394,42 @@ async def get_cache_stats() -> Dict[str, Any]:
         }
     
     try:
-        # Get various Redis info
-        info_stats = await redis_client.info('stats')
-        info_memory = await redis_client.info('memory')
-        info_clients = await redis_client.info('clients')
-        
-        # Get database size
+        # Get database size (works on all Redis providers)
         db_size = await redis_client.dbsize()
-        
-        # Calculate hit rate if available
-        hits = info_stats.get('keyspace_hits', 0)
-        misses = info_stats.get('keyspace_misses', 0)
-        total_requests = hits + misses
-        hit_rate = (hits / total_requests * 100) if total_requests > 0 else 0
         
         stats = {
             "connected": True,
             "db_size": db_size,
-            "memory_used": info_memory.get('used_memory_human', 'N/A'),
-            "memory_peak": info_memory.get('used_memory_peak_human', 'N/A'),
-            "connected_clients": info_clients.get('connected_clients', 0),
-            "total_commands": info_stats.get('total_commands_processed', 0),
-            "keyspace_hits": hits,
-            "keyspace_misses": misses,
-            "hit_rate_percent": round(hit_rate, 2),
-            "evicted_keys": info_stats.get('evicted_keys', 0),
-            "expired_keys": info_stats.get('expired_keys', 0)
         }
+        
+        # Try to get detailed stats (may fail on Upstash/cloud Redis)
+        try:
+            info_stats = await redis_client.info('stats')
+            info_memory = await redis_client.info('memory')
+            info_clients = await redis_client.info('clients')
+            
+            # Calculate hit rate if available
+            hits = info_stats.get('keyspace_hits', 0)
+            misses = info_stats.get('keyspace_misses', 0)
+            total_requests = hits + misses
+            hit_rate = (hits / total_requests * 100) if total_requests > 0 else 0
+            
+            stats.update({
+                "memory_used": info_memory.get('used_memory_human', 'N/A'),
+                "memory_peak": info_memory.get('used_memory_peak_human', 'N/A'),
+                "connected_clients": info_clients.get('connected_clients', 0),
+                "total_commands": info_stats.get('total_commands_processed', 0),
+                "keyspace_hits": hits,
+                "keyspace_misses": misses,
+                "hit_rate_percent": round(hit_rate, 2),
+                "evicted_keys": info_stats.get('evicted_keys', 0),
+                "expired_keys": info_stats.get('expired_keys', 0),
+                "detailed_stats": True
+            })
+        except Exception:
+            # Cloud Redis (Upstash) may restrict INFO command
+            stats["detailed_stats"] = False
+            stats["note"] = "Detailed stats unavailable (cloud Redis restrictions)"
         
         return stats
         
