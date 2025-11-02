@@ -1,0 +1,69 @@
+# -----------------------------
+# Python & FastAPI ML Service
+# -----------------------------
+
+# Virtual environment
+venv/
+.env
+.env.*
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Model training artifacts
+*.h5
+*.onnx
+*.pkl
+*.joblib
+*.npy
+*.npz
+*.csv
+*.png
+
+# Model outputs
+models/*.onnx
+models/*.h5
+models/*.json
+mood_dataset.csv
+confusion_matrix.png
+training_history.png
+
+# Logs & temp files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# IDE & OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Pytest / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# -----------------------------
+# Node/Frontend cross-project protection
+# -----------------------------
+node_modules/
+package-lock.json
+
+# -----------------------------
+# Local cache (Redis, etc.)
+# -----------------------------
+*.rdb
+dump.rdb
