@@ -424,6 +424,7 @@ async def get_recommendations(
 ) -> List[Dict]:
     """
     Get track recommendations from Spotify.
+    Enhanced for train_router.py recommendation endpoint.
     
     Args:
         seed_tracks: Up to 5 track IDs
@@ -435,27 +436,45 @@ async def get_recommendations(
         access_token: User's access token (optional)
         
     Returns:
-        List of recommended tracks
+        List of recommended tracks with full metadata
     """
     try:
         sp = get_spotify_client(access_token)
         
         # Ensure we don't exceed Spotify's limit of 5 seeds total
-        seeds = {
-            'seed_tracks': (seed_tracks or [])[:5],
-            'seed_artists': (seed_artists or [])[:5],
-            'seed_genres': (seed_genres or [])[:5]
-        }
+        seeds = {}
+        total_seeds = 0
         
-        # Remove empty seeds
-        seeds = {k: v for k, v in seeds.items() if v}
+        if seed_tracks:
+            max_track_seeds = min(len(seed_tracks), 5)
+            seeds['seed_tracks'] = seed_tracks[:max_track_seeds]
+            total_seeds += max_track_seeds
+        
+        if seed_artists and total_seeds < 5:
+            max_artist_seeds = min(len(seed_artists), 5 - total_seeds)
+            seeds['seed_artists'] = seed_artists[:max_artist_seeds]
+            total_seeds += max_artist_seeds
+        
+        if seed_genres and total_seeds < 5:
+            max_genre_seeds = min(len(seed_genres), 5 - total_seeds)
+            seeds['seed_genres'] = seed_genres[:max_genre_seeds]
+            total_seeds += max_genre_seeds
+        
+        # If no seeds provided, use popular genres as default
+        if total_seeds == 0:
+            print("⚠️ No seeds provided, using default genres")
+            seeds['seed_genres'] = ['pop', 'rock']
         
         # Add target features if specified
         kwargs = {}
         if target_valence is not None:
-            kwargs['target_valence'] = target_valence
+            kwargs['target_valence'] = max(0.0, min(1.0, target_valence))
         if target_energy is not None:
-            kwargs['target_energy'] = target_energy
+            kwargs['target_energy'] = max(0.0, min(1.0, target_energy))
+        
+        print(f"🎯 Getting recommendations with seeds: {seeds}")
+        if kwargs:
+            print(f"   Target features: {kwargs}")
         
         results = sp.recommendations(limit=limit, **seeds, **kwargs)
         
@@ -465,10 +484,13 @@ async def get_recommendations(
                 'id': track['id'],
                 'name': track['name'],
                 'artists': [artist['name'] for artist in track['artists']],
+                'artist_ids': [artist['id'] for artist in track['artists']],
                 'album': track['album']['name'],
+                'duration_ms': track.get('duration_ms', 0),
                 'popularity': track.get('popularity', 0),
                 'preview_url': track.get('preview_url'),
                 'external_url': track['external_urls'].get('spotify'),
+                'uri': track['uri']
             })
         
         print(f"✅ Got {len(recommendations)} recommendations")
@@ -476,6 +498,7 @@ async def get_recommendations(
         
     except spotipy.SpotifyException as e:
         print(f"⚠️ Spotify API error getting recommendations: {e}")
+        # Return empty list instead of raising to allow graceful degradation
         return []
     except Exception as e:
         print(f"⚠️ Error getting recommendations: {e}")
@@ -517,6 +540,87 @@ async def get_available_genre_seeds(
         return []
 
 
+async def get_artist_genres(
+    artist_id: str,
+    access_token: Optional[str] = None
+) -> List[str]:
+    """
+    Get genres for a specific artist.
+    Helper function for genre-based weighting in model_service.
+    
+    Args:
+        artist_id: Spotify artist ID
+        access_token: User's access token (optional)
+        
+    Returns:
+        List of genre names
+    """
+    artist_info = await get_artist_info(artist_id, access_token)
+    if artist_info:
+        return artist_info.get('genres', [])
+    return []
+
+
+async def batch_get_tracks(
+    track_ids: List[str],
+    access_token: Optional[str] = None,
+    include_features: bool = True
+) -> List[Dict]:
+    """
+    Efficiently batch fetch tracks with optional audio features.
+    Used by train_router.py for recommendation enrichment.
+    
+    Args:
+        track_ids: List of Spotify track IDs
+        access_token: User's access token (optional)
+        include_features: Whether to include audio features
+        
+    Returns:
+        List of track dictionaries with optional features
+    """
+    if not track_ids:
+        return []
+    
+    if include_features:
+        return await get_tracks_with_features(track_ids, access_token)
+    
+    # Fetch just track info without features (faster)
+    tracks_data = []
+    
+    try:
+        sp = get_spotify_client(access_token)
+        
+        for i in range(0, len(track_ids), 50):
+            batch_ids = track_ids[i:i+50]
+            
+            try:
+                tracks_response = sp.tracks(batch_ids)
+                
+                for track in tracks_response['tracks']:
+                    if not track:
+                        continue
+                    
+                    tracks_data.append({
+                        'id': track['id'],
+                        'name': track['name'],
+                        'artists': [artist['name'] for artist in track['artists']],
+                        'artist_ids': [artist['id'] for artist in track['artists']],
+                        'album': track['album']['name'],
+                        'duration_ms': track['duration_ms'],
+                        'popularity': track.get('popularity', 0),
+                        'external_url': track['external_urls'].get('spotify'),
+                    })
+                    
+            except spotipy.SpotifyException as e:
+                print(f"⚠️ Spotify API error in batch: {e}")
+                continue
+        
+    except Exception as e:
+        print(f"⚠️ Error batch fetching tracks: {e}")
+    
+    return tracks_data
+
+
 # Utility functions for testing
 
 async def test_spotify_service():
@@ -556,6 +660,15 @@ async def test_spotify_service():
     print(f"   Found {len(search_results)} tracks")
     for track in search_results[:3]:
         print(f"   - {track['name']} by {', '.join(track['artists'])}")
+    
+    print("\n4. Testing recommendations...")
+    recommendations = await get_recommendations(
+        seed_tracks=test_track_ids[:1],
+        target_valence=0.8,
+        target_energy=0.7,
+        limit=5
+    )
+    print(f"   Got {len(recommendations)} recommendations")
 
 
 if __name__ == "__main__":

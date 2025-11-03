@@ -439,6 +439,26 @@ def calculate_lyrics_weight(sentiment: Dict) -> float:
     return min(weight, 0.8)
 
 
+def get_sentiment_strength(sentiment: Dict) -> float:
+    """
+    Calculate overall sentiment strength for adaptive fusion weighting.
+    Used by model_service.py for genre-specific weighting.
+    
+    Args:
+        sentiment: Sentiment dictionary with polarity and subjectivity
+        
+    Returns:
+        Strength value between 0.0 and 1.0
+    """
+    polarity = abs(sentiment.get('polarity', 0.0))
+    subjectivity = sentiment.get('subjectivity', 0.0)
+    
+    # Combine polarity magnitude with subjectivity
+    strength = (polarity * subjectivity)
+    
+    return min(strength, 1.0)
+
+
 # Utility functions for testing
 
 async def test_lyrics_service():
@@ -456,7 +476,7 @@ async def test_lyrics_service():
     ]
     
     for track in test_tracks:
-        print(f"\n📝 Testing: {track['name']} by {track['artist']}")
+        print(f"\n🔍 Testing: {track['name']} by {track['artist']}")
         sentiment = await get_lyrics_sentiment(track['name'], track['artist'])
         
         print(f"   Polarity: {sentiment['polarity']:.3f}")
@@ -466,6 +486,7 @@ async def test_lyrics_service():
         print(f"   Lyrics found: {sentiment.get('lyrics_found', False)}")
         print(f"   Mood: {get_mood_from_lyrics(sentiment)}")
         print(f"   Weight: {calculate_lyrics_weight(sentiment):.3f}")
+        print(f"   Strength: {get_sentiment_strength(sentiment):.3f}")
 
 
 if __name__ == "__main__":
