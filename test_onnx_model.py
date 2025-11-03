@@ -12,9 +12,10 @@ import argparse
 import os
 
 
-MOOD_CLASSES = ["Happy", "Sad", "Calm", "Energetic", "Angry", "Focus"]
+# Updated to match the 4 moods from 278k_song_labelled.csv
+MOOD_CLASSES = ["Calm", "Energetic", "Happy", "Sad"]
 
-# Test cases with known moods
+# Test cases with known moods (updated to use only 4 moods)
 TEST_TRACKS = {
     "Happy Upbeat Pop": {
         "valence": 0.85,
@@ -76,35 +77,35 @@ TEST_TRACKS = {
         "time_signature": 4,
         "expected_mood": "Energetic"
     },
-    "Angry Metal": {
-        "valence": 0.25,
-        "energy": 0.95,
-        "danceability": 0.50,
-        "acousticness": 0.05,
+    "Energetic Rock": {
+        "valence": 0.65,
+        "energy": 0.92,
+        "danceability": 0.55,
+        "acousticness": 0.08,
         "instrumentalness": 0.30,
         "speechiness": 0.10,
-        "tempo": 160.0,
-        "loudness": -2.0,
-        "liveness": 0.20,
+        "tempo": 145.0,
+        "loudness": -4.0,
+        "liveness": 0.18,
         "key": 0,
         "mode": 0,
         "time_signature": 4,
-        "expected_mood": "Angry"
+        "expected_mood": "Energetic"
     },
-    "Focus Instrumental": {
-        "valence": 0.55,
-        "energy": 0.50,
-        "danceability": 0.45,
-        "acousticness": 0.40,
+    "Calm Piano": {
+        "valence": 0.45,
+        "energy": 0.20,
+        "danceability": 0.30,
+        "acousticness": 0.85,
         "instrumentalness": 0.95,
         "speechiness": 0.0,
-        "tempo": 110.0,
-        "loudness": -10.0,
+        "tempo": 85.0,
+        "loudness": -15.0,
         "liveness": 0.05,
         "key": 4,
         "mode": 1,
         "time_signature": 4,
-        "expected_mood": "Focus"
+        "expected_mood": "Calm"
     }
 }
 
@@ -162,6 +163,14 @@ def test_model(model_path, metadata_path='models/model_metadata.json'):
     metadata = load_metadata(metadata_path)
     if metadata:
         print(f"✅ Loaded metadata from {metadata_path}")
+        # Verify mood classes match
+        if 'mood_classes' in metadata:
+            saved_classes = metadata['mood_classes']
+            print(f"   Model trained on moods: {saved_classes}")
+            if saved_classes != MOOD_CLASSES:
+                print(f"⚠️  WARNING: Mood class mismatch!")
+                print(f"   Expected: {MOOD_CLASSES}")
+                print(f"   Found: {saved_classes}")
     
     # Load ONNX model
     print(f"\n📥 Loading model from {model_path}...")
@@ -280,6 +289,7 @@ def interactive_test(model_path, metadata_path='models/model_metadata.json'):
     print("\n" + "=" * 60)
     print("🎹 Interactive Test Mode")
     print("=" * 60)
+    print(f"\nThis model predicts: {', '.join(MOOD_CLASSES)}")
     print("\nEnter audio features to predict mood:")
     
     # Load model

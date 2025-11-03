@@ -49,6 +49,7 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+.cache
 
 # Build / packaging
 build/

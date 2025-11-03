@@ -26,7 +26,9 @@ from datetime import datetime
 
 
 # Configuration
-MOOD_CLASSES = ["Happy", "Sad", "Calm", "Energetic", "Angry", "Focus"]
+# This will be overridden dynamically after loading the dataset
+MOOD_CLASSES = []
+
 
 AUDIO_FEATURES = [
     'valence', 'energy', 'danceability', 'acousticness',
@@ -161,6 +163,11 @@ def load_and_preprocess_data(dataset_path):
     print(f"Dataset shape: {df.shape}")
     print(f"\nMood distribution:")
     print(df['mood'].value_counts())
+
+    # Dynamically detect mood classes from dataset
+    global MOOD_CLASSES
+    MOOD_CLASSES = sorted(df['mood'].unique())
+    print(f"\n✅ Detected mood classes: {MOOD_CLASSES}")
     
     # Separate features and labels
     X = df[AUDIO_FEATURES].values

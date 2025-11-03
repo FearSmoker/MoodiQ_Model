@@ -6,8 +6,10 @@ import os
 import uvicorn
 from datetime import datetime
 
-# Import routers
-from endpoints import mood_router, optimize_router, train_router
+# Import routers - FIXED: Import the router objects directly
+from endpoints.mood_router import router as mood_router
+from endpoints.optimize_router import router as optimize_router
+from endpoints.train_router import router as train_router
 from services import cache_service, model_service
 
 # Load environment variables
@@ -82,21 +84,21 @@ async def shutdown_event():
     print("✅ Shutdown complete")
 
 
-# Include routers
+# Include routers - FIXED: Removed .router attribute access
 app.include_router(
-    mood_router.router,
+    mood_router,
     prefix="/predict",
     tags=["Mood Prediction"]
 )
 
 app.include_router(
-    optimize_router.router,
+    optimize_router,
     prefix="/optimize",
     tags=["Playlist Optimization"]
 )
 
 app.include_router(
-    train_router.router,
+    train_router,
     prefix="/model",
     tags=["Model Training & Feedback"]
 )
