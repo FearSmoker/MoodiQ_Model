@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import numpy as np
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from services import spotify_service, lyrics_service, model_service, cache_service
 
@@ -337,4 +339,98 @@ async def health_check():
         "model_loaded": model_loaded,
         "cache_connected": cache_connected,
         "service": "mood_prediction"
+    }
+
+@router.post("/fill-gaps")
+async def fill_mood_gaps(request: Dict[str, Any]):
+    """
+    Detect gaps AND provide recommendations to fill them
+    """
+    tracks = request.get('tracks', [])
+    access_token = request.get('access_token')
+    user_id = request.get('user_id')
+    
+    # 1. Detect gaps (existing function)
+    gaps = model_service.detect_mood_gaps(tracks, threshold=1.5)
+    
+    # 2. For each gap, find songs to bridge
+    filled_gaps = []
+    
+    for gap in gaps:
+        bridge_mood = gap['recommended_bridge_mood']
+        
+        # Get recommendations matching bridge mood
+        recommendations = await spotify_service.get_recommendations(
+            target_valence=bridge_mood['valence'],
+            target_energy=bridge_mood['energy'],
+            limit=5,
+            access_token=access_token
+        )
+        
+        # Verify with model
+        track_ids = [t['id'] for t in recommendations]
+        features_list = await spotify_service.get_audio_features(track_ids, access_token)
+        
+        bridge_songs = []
+        for i, rec in enumerate(recommendations):
+            features = features_list[i]
+            if not features:
+                continue
+            
+            mood_data = await model_service.predict_mood_from_features(
+                features,
+                {"polarity": 0.0, "subjectivity": 0.0},
+                user_id=user_id
+            )
+            
+            # Check if it's actually a good bridge
+            bridge_valence = bridge_mood['valence']
+            bridge_energy = bridge_mood['energy']
+            actual_valence = features['valence']
+            actual_energy = features['energy']
+            
+            distance = np.sqrt((bridge_valence - actual_valence)**2 + (bridge_energy - actual_energy)**2)
+            
+            if distance < 0.3:  # Good match
+                rec['mood'] = mood_data['fused_mood']
+                rec['bridge_fit_score'] = float(1 - distance)
+                bridge_songs.append(rec)
+        
+        gap['recommendations'] = bridge_songs[:3]  # Top 3
+        filled_gaps.append(gap)
+    
+    return {
+        "gaps": filled_gaps,
+        "total_gaps": len(filled_gaps),
+        "all_gaps_filled": all(len(g['recommendations']) > 0 for g in filled_gaps)
+    }
+    
+
+@router.post("/realtime/analyze")
+async def analyze_realtime_playback(request: Dict[str, Any]):
+    """
+    Analyze mood of currently playing track
+    """
+    track_id = request.get('track_id')
+    user_id = request.get('user_id')
+    access_token = request.get('access_token')
+    
+    # Use existing prediction pipeline
+    track_data = await spotify_service.get_track_info(track_id, access_token)
+    features = await spotify_service.get_audio_features([track_id], access_token)
+    
+    if not features or not features[0]:
+        raise HTTPException(404, "Track features not found")
+    
+    mood_data = await model_service.predict_mood_from_features(
+        features[0],
+        {"polarity": 0.0, "subjectivity": 0.0},
+        user_id=user_id,
+        track_id=track_id
+    )
+    
+    return {
+        "track": track_data,
+        "mood": mood_data,
+        "timestamp": datetime.utcnow().isoformat()
     }

@@ -6,11 +6,13 @@ import os
 import uvicorn
 from datetime import datetime
 
-# Import routers - FIXED: Import the router objects directly
+# Import routers
 from endpoints.mood_router import router as mood_router
 from endpoints.optimize_router import router as optimize_router
 from endpoints.train_router import router as train_router
-from services import cache_service, model_service
+from services import cache_service, model_service, nlp_service
+from endpoints.generate_router import router as generate_router 
+from endpoints.analytics_router import router as analytics_router
 
 # Load environment variables
 load_dotenv()
@@ -84,7 +86,7 @@ async def shutdown_event():
     print("✅ Shutdown complete")
 
 
-# Include routers - FIXED: Removed .router attribute access
+# Include routers
 app.include_router(
     mood_router,
     prefix="/predict",
@@ -101,6 +103,17 @@ app.include_router(
     train_router,
     prefix="/model",
     tags=["Model Training & Feedback"]
+)
+
+app.include_router(
+    generate_router,
+    prefix="/generate",
+    tags=["Generation"]
+)
+app.include_router(
+    analytics_router,
+    prefix="/analytics",
+    tags=["Analytics"]
 )
 
 
@@ -120,10 +133,12 @@ def read_root():
             "health": "/health",
             "mood_prediction": "/predict",
             "optimization": "/optimize",
-            "training": "/model"
+            "training": "/model",
+            "nlp": "/nlp/command"
         },
         "features": [
             "Mood Prediction (ONNX Model + Rule-based Fallback)",
+            "Advanced NLP (HuggingFace Offloaded)",
             "Lyrics Sentiment Fusion",
             "Multi-language Support",
             "Dynamic Programming Flow Optimization",
@@ -167,6 +182,11 @@ async def health_check():
                 "status": "loaded" if model_status else "not_loaded",
                 "available": model_status,
                 "type": "ONNX" if model_status else "rule_based_fallback"
+            },
+            "nlp": {
+                "status": "available",
+                "provider": "huggingface_api",
+                "fallback": "rule_based"
             }
         },
         "uptime": os.popen('uptime -p').read().strip() if os.name != 'nt' else "N/A"
@@ -198,21 +218,28 @@ async def get_service_stats():
                 "dynamic_programming",
                 "greedy", 
                 "simulated_annealing"
-            ]
+            ],
+            "nlp": {
+                "provider": "huggingface_api",
+                "model": "facebook/bart-large-mnli",
+                "fallback": "rule_based"
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# NLP Command Processing Endpoint
+# ============================================
+# ADVANCED NLP ENDPOINT (UPDATED)
+# ============================================
 @app.post("/nlp/command")
 async def process_nlp_command(request: dict):
     """
-    Process natural language commands for voice/chat interface.
-    Matches backend's voice-command endpoint.
+    Process natural language commands using HuggingFace NLP.
+    Automatically falls back to rule-based if API unavailable.
     """
     try:
-        command = request.get('command', '').lower()
+        command = request.get('command', '').strip()
         context = request.get('context', {})
         user_id = request.get('user_id')
         
@@ -221,85 +248,29 @@ async def process_nlp_command(request: dict):
         
         print(f"🗣️ Processing NLP command: {command}")
         
-        # Simple rule-based NLP (in production, use a proper NLP model)
-        action = "unknown"
-        parameters = {}
-        response_text = "I didn't understand that command."
+        # Use advanced NLP service
+        result = await nlp_service.process_command_advanced(command, context)
         
-        # Analyze playlist
-        if any(word in command for word in ['analyze', 'check', 'what is', 'mood of']):
-            action = "analyze_playlist"
-            response_text = "I'll analyze the mood of your playlist."
+        # Add user_id to result
+        result['user_id'] = user_id
         
-        # Optimize playlist
-        elif any(word in command for word in ['optimize', 'improve', 'reorder', 'flow']):
-            action = "optimize_playlist"
-            parameters = {"algorithm": "dynamic_programming"}
-            response_text = "I'll optimize your playlist for smooth mood transitions."
-        
-        # Create playlist
-        elif any(word in command for word in ['create', 'make', 'generate']):
-            action = "create_playlist"
-            
-            # Extract mood from command
-            if 'happy' in command or 'upbeat' in command:
-                parameters = {"target_mood": "Happy"}
-                response_text = "I'll create a happy, upbeat playlist for you."
-            elif 'sad' in command or 'melancholy' in command:
-                parameters = {"target_mood": "Sad"}
-                response_text = "I'll create a melancholic playlist."
-            elif 'calm' in command or 'relaxing' in command or 'chill' in command:
-                parameters = {"target_mood": "Calm"}
-                response_text = "I'll create a calm, relaxing playlist."
-            elif 'energetic' in command or 'workout' in command or 'gym' in command:
-                parameters = {"target_mood": "Energetic"}
-                response_text = "I'll create an energetic workout playlist."
-            else:
-                response_text = "I'll create a playlist for you. What mood are you in?"
-        
-        # Transfer playlist
-        elif any(word in command for word in ['transfer', 'export', 'move', 'copy']):
-            action = "transfer_playlist"
-            
-            if 'youtube' in command:
-                parameters = {"platform": "youtube"}
-                response_text = "I'll transfer your playlist to YouTube Music."
-            elif 'apple' in command:
-                parameters = {"platform": "apple"}
-                response_text = "I'll transfer your playlist to Apple Music."
-            else:
-                response_text = "Which platform would you like to transfer to?"
-        
-        # Get recommendations
-        elif any(word in command for word in ['recommend', 'suggest', 'similar']):
-            action = "get_recommendations"
-            response_text = "I'll find some recommendations for you."
-        
-        # Help command
-        elif 'help' in command:
-            action = "help"
-            response_text = ("I can help you with: analyzing playlists, optimizing song order, "
-                           "creating mood-based playlists, transferring to other platforms, "
-                           "and getting recommendations.")
-        
-        return {
-            "success": True,
-            "action": action,
-            "parameters": parameters,
-            "response": response_text,
-            "confidence": 0.85 if action != "unknown" else 0.2
-        }
+        return result
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"❌ NLP processing error: {e}")
+        import traceback
+        traceback.print_exc()
+        
         return {
             "success": False,
             "action": "error",
             "parameters": {},
             "response": "I'm having trouble understanding that. Could you rephrase?",
-            "error": str(e)
+            "confidence": 0.0,
+            "error": str(e),
+            "method": "error"
         }
 
 

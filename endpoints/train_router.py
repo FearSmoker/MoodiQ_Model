@@ -668,3 +668,60 @@ async def health_check():
             "Background Training"
         ]
     }
+    
+class BehaviorLogRequest(BaseModel):
+    user_id: str
+    track_id: str
+    action: str  # "skip", "replay", "like", "add_to_playlist"
+    timestamp: Optional[str] = None
+    time_of_day: Optional[str] = None  # "morning", "afternoon", "evening", "night"
+
+@router.post("/behavior/log")
+async def log_user_behavior(request: BehaviorLogRequest):
+    """
+    Log implicit behavior for learning
+    """
+    behavior_key = f"behavior:{request.user_id}:{datetime.utcnow().date()}"
+    
+    # Get or create today's behavior log
+    behavior_log = await cache_service.get_from_cache(behavior_key) or {
+        "skips": [],
+        "replays": [],
+        "likes": [],
+        "date": str(datetime.utcnow().date())
+    }
+    
+    # Add to appropriate list
+    entry = {
+        "track_id": request.track_id,
+        "timestamp": request.timestamp or datetime.utcnow().isoformat(),
+        "time_of_day": request.time_of_day
+    }
+    
+    if request.action == "skip":
+        behavior_log["skips"].append(entry)
+    elif request.action == "replay":
+        behavior_log["replays"].append(entry)
+    elif request.action == "like":
+        behavior_log["likes"].append(entry)
+    
+    # Save back
+    await cache_service.set_in_cache(behavior_key, behavior_log, expiration=86400*30)
+    
+    # Analyze patterns (simple version)
+    skip_count = len(behavior_log["skips"])
+    replay_count = len(behavior_log["replays"])
+    
+    if skip_count > 10:  # User skips a lot
+        # Adjust user model to prefer higher energy/valence
+        pass  # Implement adjustment logic
+    
+    return {
+        "success": True,
+        "action_logged": request.action,
+        "daily_stats": {
+            "skips": skip_count,
+            "replays": replay_count,
+            "likes": len(behavior_log["likes"])
+        }
+    }
