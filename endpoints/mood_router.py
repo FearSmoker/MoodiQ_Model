@@ -36,7 +36,7 @@ class PlaylistMoodRequest(BaseModel):
     """Request model matching backend's POST /api/playlists/mood"""
     track_ids: List[str]
     audio_features: List[Dict[str, Any]]
-    access_token: str
+    access_token: Optional[str] = None  # Make optional
     user_id: Optional[str] = None
 
 
@@ -45,7 +45,7 @@ class TrackMoodRequest(BaseModel):
     track_id: str
     name: str
     artist: str
-    access_token: str
+    access_token: Optional[str] = None  # Make optional
     user_id: Optional[str] = None
     genre: Optional[str] = None
 
@@ -66,12 +66,47 @@ class PlaylistMoodResponse(BaseModel):
     overallMood: str
 
 
+def validate_access_token(token: Optional[str]) -> Optional[str]:
+    """
+    Validate access token and return None if it's a placeholder/invalid.
+    This allows the service to fall back to server credentials.
+    """
+    if not token:
+        return None
+    
+    # Check for common placeholder values
+    placeholders = [
+        "YOUR_SPOTIFY_TOKEN",
+        "your_spotify_token", 
+        "YOUR_TOKEN",
+        "your_token",
+        "TOKEN",
+        "token",
+        "test_token",
+        "dummy_token"
+    ]
+    
+    if token.lower() in [p.lower() for p in placeholders]:
+        print(f"⚠️  Invalid/placeholder token detected: '{token}' - using server credentials")
+        return None
+    
+    # If token is too short, it's probably invalid
+    if len(token) < 50:
+        print(f"⚠️  Token too short ({len(token)} chars) - using server credentials")
+        return None
+    
+    return token
+
+
 @router.post("/track", response_model=TrackMoodResponse)
 async def get_track_mood(request: TrackMoodRequest):
     """
     Analyze mood for a single track.
     Matches backend's single track analysis flow.
     """
+    # Validate and clean the access token
+    clean_token = validate_access_token(request.access_token)
+    
     cache_key = f"track:mood:{request.track_id}:{request.user_id or 'global'}"
     
     try:
@@ -84,13 +119,62 @@ async def get_track_mood(request: TrackMoodRequest):
         print(f"🔍 Cache MISS for track {request.track_id}")
         
         # 1. Get Audio Features
+        # Use clean_token (None if invalid) - will fall back to server credentials
         features_list = await spotify_service.get_audio_features(
             [request.track_id], 
-            request.access_token
+            clean_token
         )
         
         if not features_list or not features_list[0]:
-            raise HTTPException(status_code=404, detail="Track features not found")
+            # Instead of 404, return a response with rule-based prediction
+            print(f"⚠️  Track features not available, using rule-based prediction")
+            
+            # Use default features for rule-based prediction
+            default_features = {
+                'valence': 0.5,
+                'energy': 0.5,
+                'danceability': 0.5,
+                'acousticness': 0.5,
+                'instrumentalness': 0.0,
+                'speechiness': 0.05,
+                'tempo': 120.0,
+                'loudness': -10.0,
+                'liveness': 0.1,
+                'key': 0,
+                'mode': 1,
+                'time_signature': 4
+            }
+            
+            # Get lyrics sentiment (this might still work)
+            lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
+                request.name, 
+                request.artist
+            )
+            
+            # Predict mood with default features
+            mood_data = await model_service.predict_mood_from_features(
+                default_features, 
+                lyrics_sentiment,
+                user_id=request.user_id,
+                track_id=request.track_id,
+                genre=request.genre
+            )
+            
+            result = {
+                "track_id": request.track_id,
+                "name": request.name,
+                "artists": [request.artist],
+                "mood": {
+                    **mood_data,
+                    "warning": "Used default features - actual track features unavailable"
+                },
+                "features": None
+            }
+            
+            # Cache for shorter time (1 hour) since features weren't available
+            await cache_service.set_in_cache(cache_key, result, expiration=3600)
+            
+            return result
         
         audio_features = features_list[0]
         
@@ -140,9 +224,12 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
     Backend sends:
     - track_ids: List of Spotify track IDs
     - audio_features: Already fetched from Spotify
-    - access_token: User's Spotify token
+    - access_token: User's Spotify token (optional)
     - user_id: User ID for personalization
     """
+    # Validate and clean the access token
+    clean_token = validate_access_token(request.access_token)
+    
     try:
         print(f"🎵 Analyzing playlist with {len(request.track_ids)} tracks")
         
@@ -152,8 +239,13 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                 detail="No tracks provided for analysis"
             )
         
-        # Get Spotify client to fetch track metadata
-        sp = spotify_service.get_spotify_client(request.access_token)
+        # Get Spotify client - use clean_token (None if invalid)
+        try:
+            sp = spotify_service.get_spotify_client(clean_token)
+        except Exception as e:
+            print(f"⚠️  Failed to get Spotify client with user token: {e}")
+            print("   Falling back to server credentials...")
+            sp = spotify_service.get_spotify_client(None)
         
         # Fetch track info in batches (Spotify allows max 50 per request)
         all_tracks_info = []
@@ -163,8 +255,8 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                 tracks_response = sp.tracks(batch_ids)
                 all_tracks_info.extend(tracks_response['tracks'])
             except Exception as e:
-                print(f"⚠️ Error fetching track info batch: {e}")
-                # Continue with other batches
+                print(f"⚠️  Error fetching track info batch {i//50 + 1}: {e}")
+                # If this fails, we'll use track_ids as fallback below
                 continue
         
         # Create a map for quick lookup
@@ -177,37 +269,62 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
             try:
                 # Get corresponding audio features
                 if idx >= len(request.audio_features):
-                    print(f"⚠️ Missing audio features for track {track_id}")
+                    print(f"⚠️  Missing audio features for track {track_id}")
                     continue
                 
                 audio_features = request.audio_features[idx]
                 
-                if not audio_features or audio_features.get('id') != track_id:
-                    print(f"⚠️ Audio features mismatch for track {track_id}")
+                if not audio_features:
+                    print(f"⚠️  Audio features are None for track {track_id}")
                     continue
                 
-                # Get track info
+                # Verify track ID matches (with fallback)
+                features_id = audio_features.get('id')
+                if features_id and features_id != track_id:
+                    print(f"⚠️  Audio features ID mismatch: expected {track_id}, got {features_id}")
+                    # Try to find matching features
+                    matching_features = next(
+                        (f for f in request.audio_features if f and f.get('id') == track_id),
+                        None
+                    )
+                    if matching_features:
+                        audio_features = matching_features
+                        print(f"✅ Found matching features for {track_id}")
+                    else:
+                        print(f"⚠️  No matching features found, skipping {track_id}")
+                        continue
+                
+                # Get track info (with fallback to basic info)
                 track_info = track_info_map.get(track_id)
-                if not track_info:
-                    print(f"⚠️ Track info not found for {track_id}")
-                    continue
                 
-                name = track_info['name']
-                artists = [artist['name'] for artist in track_info['artists']]
-                artist_str = artists[0] if artists else "Unknown"
-                album = track_info['album']['name']
-                
-                # Get genre from artist info (if available)
-                genre = None
-                try:
-                    if track_info['artists']:
-                        artist_id = track_info['artists'][0]['id']
-                        artist_info = sp.artist(artist_id)
-                        if artist_info.get('genres'):
-                            genre = artist_info['genres'][0]
-                except Exception as genre_error:
-                    print(f"⚠️ Could not fetch genre for artist: {genre_error}")
-                    pass
+                if track_info:
+                    name = track_info['name']
+                    artists = [artist['name'] for artist in track_info['artists']]
+                    artist_str = artists[0] if artists else "Unknown"
+                    album = track_info['album']['name']
+                    duration_ms = track_info.get('duration_ms')
+                    preview_url = track_info.get('preview_url')
+                    
+                    # Get genre from artist info (if available)
+                    genre = None
+                    try:
+                        if track_info['artists']:
+                            artist_id = track_info['artists'][0]['id']
+                            artist_info = sp.artist(artist_id)
+                            if artist_info.get('genres'):
+                                genre = artist_info['genres'][0]
+                    except Exception:
+                        pass
+                else:
+                    # Fallback: use basic info from track_id
+                    print(f"⚠️  Track info not available for {track_id}, using basic info")
+                    name = f"Track {idx + 1}"
+                    artists = ["Unknown Artist"]
+                    artist_str = "Unknown Artist"
+                    album = "Unknown Album"
+                    duration_ms = None
+                    preview_url = None
+                    genre = None
                 
                 # Check user-specific cache
                 cache_key = f"track:mood:{track_id}:{request.user_id or 'global'}"
@@ -254,8 +371,8 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                     "name": name,
                     "artists": artists,
                     "album": album,
-                    "duration_ms": track_info.get('duration_ms'),
-                    "preview_url": track_info.get('preview_url'),
+                    "duration_ms": duration_ms,
+                    "preview_url": preview_url,
                     "features": audio_features,
                     "mood": mood_data.get('fused_mood', 'Unknown'),
                     "moodScore": mood_data.get('confidence', 0),
@@ -272,7 +389,7 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
         if not processed_tracks:
             raise HTTPException(
                 status_code=500,
-                detail="Failed to process any tracks"
+                detail="Failed to process any tracks - check if audio features are provided correctly"
             )
         
         # Calculate mood distribution
@@ -284,7 +401,7 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
             "overallMood": mood_stats.get('overall_mood', 'Mixed')
         }
         
-        print(f"✅ Successfully analyzed {len(processed_tracks)} tracks")
+        print(f"✅ Successfully analyzed {len(processed_tracks)}/{len(request.track_ids)} tracks")
         
         return response
         
