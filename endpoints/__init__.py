@@ -12,9 +12,13 @@ Modules:
 from .mood_router import router as mood_router
 from .optimize_router import router as optimize_router
 from .train_router import router as train_router
+from .analytics_router import router as analytics_router
+from .generate_router import router as generate_router
 
 __all__ = [
     "mood_router",
     "optimize_router", 
-    "train_router"
+    "train_router",
+    "analytics_router",
+    "generate_router"
 ]
