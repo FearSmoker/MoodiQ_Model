@@ -12,24 +12,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Model training artifacts
-*.h5
-*.onnx
-*.pkl
-*.joblib
-*.npy
-*.npz
-*.csv
-*.png
-
-# Model outputs
-models/*.onnx
-models/*.h5
-models/*.json
-mood_dataset.csv
-confusion_matrix.png
-training_history.png
-
 # Logs & temp files
 *.log
 *.tmp
