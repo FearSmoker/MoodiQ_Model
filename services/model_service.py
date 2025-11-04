@@ -60,6 +60,7 @@ scaler_scale = None
 def load_model():
     """
     Loads the trained ONNX machine learning model and metadata from disk.
+    MEMORY OPTIMIZED for Render 512MB limit.
     """
     global mood_model, session_options, scaler_mean, scaler_scale, MOOD_CLASSES
     
@@ -69,11 +70,20 @@ def load_model():
             print(f"⚠️  WARNING: Model file not found at {MOOD_MODEL_PATH}. Using rule-based fallback.")
             return
         
-        # Configure ONNX Runtime session
+        # Configure ONNX Runtime session with AGGRESSIVE memory optimization
         session_options = ort.SessionOptions()
-        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         
-        # Load ONNX model
+        # ✅ CRITICAL: Memory optimization flags
+        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        session_options.enable_mem_pattern = False  # Disable memory pattern optimization
+        session_options.enable_cpu_mem_arena = False  # Disable memory arena (saves ~50-100MB)
+        session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL  # Sequential execution
+        
+        # Limit thread pool size to reduce memory overhead
+        session_options.intra_op_num_threads = 1
+        session_options.inter_op_num_threads = 1
+        
+        # Load ONNX model with minimal memory footprint
         mood_model = ort.InferenceSession(
             MOOD_MODEL_PATH, 
             session_options,
@@ -81,20 +91,21 @@ def load_model():
         )
         
         print(f"✅ ONNX model loaded successfully from {MOOD_MODEL_PATH}")
+        print(f"   Memory-optimized configuration: arena=OFF, threads=1")
         
         # Print model info
         input_info = mood_model.get_inputs()[0]
         output_info = mood_model.get_outputs()[0]
-        print(f"   Input: {input_info.name}, Shape: {input_info.shape}, Type: {input_info.type}")
-        print(f"   Output: {output_info.name}, Shape: {output_info.shape}, Type: {output_info.type}")
+        print(f"   Input: {input_info.name}, Shape: {input_info.shape}")
+        print(f"   Output: {output_info.name}, Shape: {output_info.shape}")
         
         # Load metadata for normalization
         metadata_path = os.path.join("models", "model_metadata.json")
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
-                scaler_mean = np.array(metadata['scaler_mean'])
-                scaler_scale = np.array(metadata['scaler_scale'])
+                scaler_mean = np.array(metadata['scaler_mean'], dtype=np.float32)  # Use float32 instead of float64
+                scaler_scale = np.array(metadata['scaler_scale'], dtype=np.float32)
                 MOOD_CLASSES = metadata['mood_classes']
                 print(f"✅ Loaded metadata: {len(MOOD_CLASSES)} mood classes")
                 print(f"   Mood classes: {MOOD_CLASSES}")
@@ -104,7 +115,8 @@ def load_model():
     except Exception as e:
         print(f"❌ ERROR: Could not load ONNX model: {e}. Using rule-based fallback.")
         mood_model = None
-
+        import traceback
+        traceback.print_exc()
 
 def normalize_features(features: Dict) -> np.ndarray:
     """
