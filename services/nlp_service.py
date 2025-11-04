@@ -1,10 +1,10 @@
 """
 Advanced NLP service using HuggingFace Inference API (offloaded).
-No local model loading - all processing happens on HuggingFace servers.
+Fixed to use async HTTP calls to prevent blocking.
 """
 
 import os
-import requests
+import httpx  # Changed from requests to httpx for async support
 from typing import Dict, Tuple, Optional, List
 from . import cache_service
 
@@ -38,6 +38,7 @@ ACTIVITY_LABELS = [
 async def classify_intent_hf(command: str) -> Tuple[str, float]:
     """
     Classify user intent using HuggingFace zero-shot classification.
+    NOW PROPERLY ASYNC - won't block the event loop.
     
     Args:
         command: User's natural language command
@@ -65,17 +66,19 @@ async def classify_intent_hf(command: str) -> Tuple[str, float]:
             }
         }
         
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=10)
-        
-        if response.status_code == 503:
-            # Model is loading on HF servers
-            print("⏳ HuggingFace model is loading, retrying...")
-            import time
-            time.sleep(2)
-            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=15)
-        
-        response.raise_for_status()
-        result = response.json()
+        # Use httpx for async requests
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(HF_API_URL, headers=headers, json=payload)
+            
+            if response.status_code == 503:
+                # Model is loading on HF servers
+                print("⏳ HuggingFace model is loading, retrying...")
+                import asyncio
+                await asyncio.sleep(2)
+                response = await client.post(HF_API_URL, headers=headers, json=payload)
+            
+            response.raise_for_status()
+            result = response.json()
         
         # Extract top prediction
         intent = result['labels'][0]
@@ -91,11 +94,11 @@ async def classify_intent_hf(command: str) -> Tuple[str, float]:
         print(f"✅ Intent classified: {intent} (confidence: {confidence:.2f})")
         return intent, confidence
         
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         print("⚠️ HuggingFace API timeout, falling back to rule-based")
         return fallback_intent_classification(command)
         
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         print(f"⚠️ HuggingFace API error: {e}, falling back to rule-based")
         return fallback_intent_classification(command)
         
@@ -107,6 +110,7 @@ async def classify_intent_hf(command: str) -> Tuple[str, float]:
 async def extract_mood_hf(command: str) -> Optional[str]:
     """
     Extract mood from command using zero-shot classification.
+    NOW PROPERLY ASYNC.
     
     Args:
         command: User's command
@@ -130,15 +134,16 @@ async def extract_mood_hf(command: str) -> Optional[str]:
             }
         }
         
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=10)
-        
-        if response.status_code == 503:
-            import time
-            time.sleep(2)
-            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=15)
-        
-        response.raise_for_status()
-        result = response.json()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(HF_API_URL, headers=headers, json=payload)
+            
+            if response.status_code == 503:
+                import asyncio
+                await asyncio.sleep(2)
+                response = await client.post(HF_API_URL, headers=headers, json=payload)
+            
+            response.raise_for_status()
+            result = response.json()
         
         mood = result['labels'][0]
         confidence = result['scores'][0]
@@ -162,6 +167,7 @@ async def extract_mood_hf(command: str) -> Optional[str]:
 async def extract_activity_hf(command: str) -> Optional[str]:
     """
     Extract activity from command.
+    NOW PROPERLY ASYNC.
     
     Args:
         command: User's command
@@ -185,15 +191,16 @@ async def extract_activity_hf(command: str) -> Optional[str]:
             }
         }
         
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=10)
-        
-        if response.status_code == 503:
-            import time
-            time.sleep(2)
-            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=15)
-        
-        response.raise_for_status()
-        result = response.json()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(HF_API_URL, headers=headers, json=payload)
+            
+            if response.status_code == 503:
+                import asyncio
+                await asyncio.sleep(2)
+                response = await client.post(HF_API_URL, headers=headers, json=payload)
+            
+            response.raise_for_status()
+            result = response.json()
         
         activity = result['labels'][0]
         confidence = result['scores'][0]
@@ -281,6 +288,7 @@ def fallback_activity_extraction(command: str) -> Optional[str]:
 async def process_command_advanced(command: str, context: Dict = None) -> Dict:
     """
     Process natural language command with advanced NLP.
+    NOW PROPERLY ASYNC - all HTTP calls are non-blocking.
     
     Args:
         command: User's natural language command
