@@ -59,7 +59,7 @@ python-json-logger==2.0.7
 # ------------------------------
 # Training Dependencies
 # ------------------------------
-# tensorflow==2.15.0
+tensorflow==2.15.0
 protobuf==3.20.3
 tf2onnx==1.15.1
 matplotlib==3.8.2
