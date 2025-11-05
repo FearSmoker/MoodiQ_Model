@@ -142,7 +142,8 @@ async def startup_event():
         print(f"⚠️ Redis connection failed: {e}")
         print("   Service will run without caching")
     
-    await db_recommendation_service.initialize()
+    db_reco = db_recommendation_service.DatabaseRecommendationService()
+    await db_reco.initialize()
     
     app.include_router(
     live_listening_router,
