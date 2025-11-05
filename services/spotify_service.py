@@ -1,12 +1,7 @@
 """
-Spotify API service for Moodify-AI.
-
-Handles:
-- Audio features fetching
-- Track information retrieval
-- Artist information
-- Playlist operations
-- Smart caching to reduce API calls
+Hybrid Spotify Service
+Uses Spotify API for: metadata, playlists, user data, currently playing
+Uses Multi-API for: audio features, recommendations, mood analysis
 """
 
 import os
@@ -16,25 +11,25 @@ from spotipy.oauth2 import SpotifyClientCredentials
 from . import cache_service
 
 
-# Global Spotify client for server-to-server calls
+# Global Spotify client
 sp_server: Optional[spotipy.Spotify] = None
 
 
 def get_spotify_client(access_token: Optional[str] = None) -> spotipy.Spotify:
     """
-    Get Spotify client. Uses user token if provided, otherwise uses server credentials.
+    Get Spotify client with user token or server credentials
     
     Args:
-        access_token: User's Spotify access token (optional)
+        access_token: User's access token (from OAuth)
         
     Returns:
         Configured Spotify client
     """
     if access_token:
-        # Create client with user's access token
+        # Use user's access token (from frontend OAuth)
         return spotipy.Spotify(auth=access_token)
     
-    # Use server-to-server authentication
+    # Use server credentials for public endpoints
     global sp_server
     
     if sp_server is None:
@@ -43,7 +38,7 @@ def get_spotify_client(access_token: Optional[str] = None) -> spotipy.Spotify:
         
         if not client_id or not client_secret:
             raise ValueError(
-                "SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set in environment"
+                "SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set"
             )
         
         try:
@@ -62,128 +57,118 @@ def get_spotify_client(access_token: Optional[str] = None) -> spotipy.Spotify:
     return sp_server
 
 
-async def get_audio_features(
-    track_ids: List[str], 
-    access_token: Optional[str] = None
-) -> List[Dict[str, Any]]:
+# ============================================
+# USER DATA & PLAYLISTS (Spotify API - Working)
+# ============================================
+
+async def get_user_playlists(
+    access_token: str,
+    limit: int = 50
+) -> List[Dict]:
     """
-    Get audio features for multiple tracks with caching.
+    Get user's playlists from Spotify
     
-    Args:
-        track_ids: List of Spotify track IDs
-        access_token: User's access token (optional)
-        
-    Returns:
-        List of audio feature dictionaries
+    Endpoint: GET /me/playlists (WORKING - not restricted)
     """
-    if not track_ids:
+    cache_key = f"spotify:playlists:{access_token[:10]}"
+    cached = await cache_service.get_from_cache(cache_key)
+    
+    if cached:
+        print(f"📦 Cache HIT: User playlists")
+        return cached
+    
+    try:
+        sp = get_spotify_client(access_token)
+        
+        print(f"📂 Fetching user playlists from Spotify...")
+        playlists_data = sp.current_user_playlists(limit=limit)
+        
+        playlists = []
+        for item in playlists_data['items']:
+            playlists.append({
+                'id': item['id'],
+                'name': item['name'],
+                'description': item.get('description'),
+                'images': item.get('images', []),
+                'tracks_total': item['tracks']['total'],
+                'owner': item['owner']['display_name'],
+                'public': item.get('public', False),
+                'collaborative': item.get('collaborative', False),
+                'external_url': item['external_urls']['spotify'],
+                'uri': item['uri']
+            })
+        
+        # Cache for 5 minutes
+        await cache_service.set_in_cache(cache_key, playlists, expiration=300)
+        
+        print(f"✅ Retrieved {len(playlists)} playlists from Spotify")
+        return playlists
+        
+    except Exception as e:
+        print(f"❌ Error fetching playlists: {e}")
         return []
+
+
+async def get_playlist_tracks(
+    playlist_id: str,
+    access_token: str
+) -> List[Dict]:
+    """
+    Get tracks from a Spotify playlist
     
-    print(f"🎹 Fetching audio features for {len(track_ids)} tracks...")
+    Endpoint: GET /playlists/{id}/tracks (WORKING - not restricted)
+    """
+    cache_key = f"spotify:playlist_tracks:{playlist_id}"
+    cached = await cache_service.get_from_cache(cache_key)
     
-    sp = get_spotify_client(access_token)
+    if cached:
+        print(f"📦 Cache HIT: Playlist tracks")
+        return cached
     
-    features_list = []
-    cached_features = {}
-    tracks_to_fetch = []
-    
-    # Check cache for each track
-    for track_id in track_ids:
-        cached = await cache_service.get_cached_audio_features(track_id)
+    try:
+        sp = get_spotify_client(access_token)
         
-        if cached:
-            cached_features[track_id] = cached
-        else:
-            tracks_to_fetch.append(track_id)
-    
-    print(f"📦 Cache hits: {len(cached_features)}, Cache misses: {len(tracks_to_fetch)}")
-    
-    # Fetch uncached tracks from Spotify
-    if tracks_to_fetch:
-        # Spotify allows max 100 tracks per request
-        for i in range(0, len(tracks_to_fetch), 100):
-            batch = tracks_to_fetch[i:i+100]
+        print(f"🎵 Fetching playlist tracks from Spotify...")
+        results = sp.playlist_tracks(playlist_id)
+        
+        tracks = []
+        for item in results['items']:
+            if not item['track']:
+                continue
             
-            try:
-                batch_features = sp.audio_features(tracks=batch)
-                
-                # Process and cache results
-                for features in batch_features:
-                    if features and features.get('id'):
-                        track_id = features['id']
-                        
-                        # Normalize features for consistency
-                        normalized_features = normalize_audio_features(features)
-                        
-                        # Cache for 1 day (features don't change)
-                        await cache_service.cache_audio_features(
-                            track_id,
-                            normalized_features
-                        )
-                        
-                        cached_features[track_id] = normalized_features
-                
-            except spotipy.SpotifyException as e:
-                print(f"⚠️ Spotify API error fetching features: {e}")
-                continue
-            except Exception as e:
-                print(f"⚠️ Error fetching audio features batch: {e}")
-                continue
-    
-    # Assemble final list in original order
-    for track_id in track_ids:
-        if track_id in cached_features:
-            features_list.append(cached_features[track_id])
-        else:
-            # Add placeholder for missing features
-            print(f"⚠️ No features available for track: {track_id}")
-            features_list.append(None)
-    
-    print(f"✅ Retrieved features for {len([f for f in features_list if f])} tracks")
-    
-    return features_list
-
-
-def normalize_audio_features(features: Dict) -> Dict:
-    """
-    Normalize and validate audio features.
-    
-    Args:
-        features: Raw features from Spotify API
+            track = item['track']
+            tracks.append({
+                'id': track['id'],
+                'name': track['name'],
+                'artists': [
+                    {
+                        'id': artist['id'],
+                        'name': artist['name']
+                    } for artist in track['artists']
+                ],
+                'album': {
+                    'id': track['album']['id'],
+                    'name': track['album']['name'],
+                    'images': track['album']['images']
+                },
+                'duration_ms': track['duration_ms'],
+                'popularity': track.get('popularity', 0),
+                'explicit': track.get('explicit', False),
+                'preview_url': track.get('preview_url'),
+                'external_url': track['external_urls']['spotify'],
+                'uri': track['uri'],
+                'added_at': item.get('added_at')
+            })
         
-    Returns:
-        Normalized features dictionary
-    """
-    # Ensure all expected fields exist with defaults
-    normalized = {
-        'id': features.get('id'),
-        'valence': float(features.get('valence', 0.5)),
-        'energy': float(features.get('energy', 0.5)),
-        'danceability': float(features.get('danceability', 0.5)),
-        'acousticness': float(features.get('acousticness', 0.5)),
-        'instrumentalness': float(features.get('instrumentalness', 0.0)),
-        'speechiness': float(features.get('speechiness', 0.05)),
-        'tempo': float(features.get('tempo', 120.0)),
-        'loudness': float(features.get('loudness', -10.0)),
-        'liveness': float(features.get('liveness', 0.1)),
-        'key': int(features.get('key', 0)),
-        'mode': int(features.get('mode', 1)),
-        'time_signature': int(features.get('time_signature', 4)),
-        'duration_ms': int(features.get('duration_ms', 0)),
-    }
-    
-    # Validate ranges
-    for key in ['valence', 'energy', 'danceability', 'acousticness', 
-                'instrumentalness', 'speechiness', 'liveness']:
-        normalized[key] = max(0.0, min(1.0, normalized[key]))
-    
-    normalized['tempo'] = max(0.0, min(300.0, normalized['tempo']))
-    normalized['loudness'] = max(-60.0, min(0.0, normalized['loudness']))
-    normalized['key'] = max(0, min(11, normalized['key']))
-    normalized['mode'] = max(0, min(1, normalized['mode']))
-    normalized['time_signature'] = max(3, min(7, normalized['time_signature']))
-    
-    return normalized
+        # Cache for 10 minutes
+        await cache_service.set_in_cache(cache_key, tracks, expiration=600)
+        
+        print(f"✅ Retrieved {len(tracks)} tracks from Spotify")
+        return tracks
+        
+    except Exception as e:
+        print(f"❌ Error fetching playlist tracks: {e}")
+        return []
 
 
 async def get_track_info(
@@ -191,19 +176,13 @@ async def get_track_info(
     access_token: Optional[str] = None
 ) -> Optional[Dict]:
     """
-    Get detailed track information.
+    Get track information from Spotify
     
-    Args:
-        track_id: Spotify track ID
-        access_token: User's access token (optional)
-        
-    Returns:
-        Track information dictionary or None if not found
+    Endpoint: GET /tracks/{id} (WORKING - not restricted)
     """
-    cache_key = f"track:info:{track_id}"
-    
-    # Check cache
+    cache_key = f"spotify:track:{track_id}"
     cached = await cache_service.get_from_cache(cache_key)
+    
     if cached:
         return cached
     
@@ -214,463 +193,449 @@ async def get_track_info(
         if not track:
             return None
         
-        # Extract relevant information
         info = {
             'id': track['id'],
             'name': track['name'],
-            'artists': [artist['name'] for artist in track['artists']],
-            'artist_ids': [artist['id'] for artist in track['artists']],
-            'album': track['album']['name'],
-            'album_id': track['album']['id'],
+            'artists': [
+                {
+                    'id': artist['id'],
+                    'name': artist['name']
+                } for artist in track['artists']
+            ],
+            'album': {
+                'id': track['album']['id'],
+                'name': track['album']['name'],
+                'images': track['album']['images'],
+                'release_date': track['album'].get('release_date')
+            },
             'duration_ms': track['duration_ms'],
-            'explicit': track.get('explicit', False),
             'popularity': track.get('popularity', 0),
+            'explicit': track.get('explicit', False),
             'preview_url': track.get('preview_url'),
-            'external_url': track['external_urls'].get('spotify'),
+            'external_url': track['external_urls']['spotify'],
             'uri': track['uri'],
+            'disc_number': track.get('disc_number', 1),
+            'track_number': track.get('track_number', 1)
         }
-        
-        # Add album art if available
-        if track['album'].get('images') and len(track['album']['images']) > 0:
-            info['album_art'] = track['album']['images'][0]['url']
         
         # Cache for 1 day
         await cache_service.set_in_cache(cache_key, info, expiration=86400)
-        
         return info
         
-    except spotipy.SpotifyException as e:
-        print(f"⚠️ Spotify API error getting track {track_id}: {e}")
-        return None
     except Exception as e:
-        print(f"⚠️ Error getting track info: {e}")
+        print(f"❌ Error getting track info: {e}")
         return None
 
 
-async def get_artist_info(
-    artist_id: str,
-    access_token: Optional[str] = None
-) -> Optional[Dict]:
+async def get_currently_playing(access_token: str) -> Optional[Dict]:
     """
-    Get artist information including genres.
+    Get currently playing track
     
-    Args:
-        artist_id: Spotify artist ID
-        access_token: User's access token (optional)
+    Endpoint: GET /me/player/currently-playing (WORKING - not restricted)
+    """
+    try:
+        sp = get_spotify_client(access_token)
         
-    Returns:
-        Artist information dictionary or None if not found
+        print(f"🎧 Fetching currently playing from Spotify...")
+        playback = sp.current_playback()
+        
+        if not playback or not playback.get('is_playing'):
+            return {
+                'is_playing': False,
+                'message': 'No track currently playing'
+            }
+        
+        track = playback['item']
+        device = playback['device']
+        
+        return {
+            'is_playing': True,
+            'track': {
+                'id': track['id'],
+                'name': track['name'],
+                'artists': [
+                    {
+                        'id': artist['id'],
+                        'name': artist['name']
+                    } for artist in track['artists']
+                ],
+                'album': {
+                    'name': track['album']['name'],
+                    'images': track['album']['images']
+                },
+                'duration_ms': track['duration_ms'],
+                'popularity': track.get('popularity', 0),
+                'external_url': track['external_urls']['spotify'],
+                'uri': track['uri']
+            },
+            'device': {
+                'name': device.get('name'),
+                'type': device.get('type'),
+                'volume_percent': device.get('volume_percent')
+            },
+            'progress_ms': playback.get('progress_ms', 0),
+            'shuffle_state': playback.get('shuffle_state', False),
+            'repeat_state': playback.get('repeat_state', 'off'),
+            'timestamp': playback.get('timestamp')
+        }
+        
+    except Exception as e:
+        print(f"❌ Error getting currently playing: {e}")
+        return None
+
+
+async def get_user_top_tracks(
+    access_token: str,
+    time_range: str = 'medium_term',
+    limit: int = 20
+) -> List[Dict]:
     """
-    cache_key = f"artist:info:{artist_id}"
+    Get user's top tracks
     
-    # Check cache
+    Endpoint: GET /me/top/tracks (WORKING - not restricted)
+    Requires scope: user-top-read
+    """
+    cache_key = f"spotify:top_tracks:{access_token[:10]}:{time_range}"
     cached = await cache_service.get_from_cache(cache_key)
+    
     if cached:
         return cached
     
     try:
         sp = get_spotify_client(access_token)
-        artist = sp.artist(artist_id)
         
-        if not artist:
-            return None
+        print(f"🎵 Fetching user's top tracks from Spotify...")
+        results = sp.current_user_top_tracks(
+            limit=limit,
+            time_range=time_range
+        )
         
-        # Extract relevant information
-        info = {
-            'id': artist['id'],
-            'name': artist['name'],
-            'genres': artist.get('genres', []),
-            'popularity': artist.get('popularity', 0),
-            'followers': artist['followers'].get('total', 0),
-            'external_url': artist['external_urls'].get('spotify'),
-        }
+        tracks = []
+        for track in results['items']:
+            tracks.append({
+                'id': track['id'],
+                'name': track['name'],
+                'artists': [
+                    {
+                        'id': artist['id'],
+                        'name': artist['name']
+                    } for artist in track['artists']
+                ],
+                'album': {
+                    'name': track['album']['name'],
+                    'images': track['album']['images']
+                },
+                'popularity': track.get('popularity', 0),
+                'external_url': track['external_urls']['spotify']
+            })
         
-        # Add artist image if available
-        if artist.get('images') and len(artist['images']) > 0:
-            info['image_url'] = artist['images'][0]['url']
+        # Cache for 1 hour
+        await cache_service.set_in_cache(cache_key, tracks, expiration=3600)
         
-        # Cache for 1 week (artist info changes slowly)
-        await cache_service.set_in_cache(cache_key, info, expiration=604800)
+        print(f"✅ Retrieved {len(tracks)} top tracks")
+        return tracks
         
-        return info
-        
-    except spotipy.SpotifyException as e:
-        print(f"⚠️ Spotify API error getting artist {artist_id}: {e}")
-        return None
     except Exception as e:
-        print(f"⚠️ Error getting artist info: {e}")
-        return None
+        print(f"❌ Error getting top tracks: {e}")
+        return []
 
 
-async def get_tracks_with_features(
-    track_ids: List[str],
-    access_token: Optional[str] = None
+async def get_user_top_artists(
+    access_token: str,
+    time_range: str = 'medium_term',
+    limit: int = 20
 ) -> List[Dict]:
     """
-    Get complete track information including audio features.
+    Get user's top artists
     
-    Args:
-        track_ids: List of Spotify track IDs
-        access_token: User's access token (optional)
-        
-    Returns:
-        List of dictionaries with track info and audio features
+    Endpoint: GET /me/top/artists (WORKING - not restricted)
+    Requires scope: user-top-read
     """
-    if not track_ids:
-        return []
+    cache_key = f"spotify:top_artists:{access_token[:10]}:{time_range}"
+    cached = await cache_service.get_from_cache(cache_key)
     
-    print(f"🎵 Fetching complete data for {len(track_ids)} tracks...")
-    
-    # Get audio features (with caching)
-    audio_features = await get_audio_features(track_ids, access_token)
-    
-    # Get track information
-    tracks_data = []
+    if cached:
+        return cached
     
     try:
         sp = get_spotify_client(access_token)
         
-        # Fetch in batches of 50 (Spotify limit)
-        for i in range(0, len(track_ids), 50):
-            batch_ids = track_ids[i:i+50]
-            
-            try:
-                tracks_response = sp.tracks(batch_ids)
-                
-                for j, track in enumerate(tracks_response['tracks']):
-                    if not track:
-                        continue
-                    
-                    track_idx = i + j
-                    features = audio_features[track_idx] if track_idx < len(audio_features) else None
-                    
-                    track_data = {
-                        'id': track['id'],
-                        'name': track['name'],
-                        'artists': [artist['name'] for artist in track['artists']],
-                        'artist_ids': [artist['id'] for artist in track['artists']],
-                        'album': track['album']['name'],
-                        'duration_ms': track['duration_ms'],
-                        'popularity': track.get('popularity', 0),
-                        'preview_url': track.get('preview_url'),
-                        'external_url': track['external_urls'].get('spotify'),
-                        'features': features
-                    }
-                    
-                    tracks_data.append(track_data)
-                    
-            except spotipy.SpotifyException as e:
-                print(f"⚠️ Spotify API error in batch: {e}")
-                continue
+        print(f"🎸 Fetching user's top artists from Spotify...")
+        results = sp.current_user_top_artists(
+            limit=limit,
+            time_range=time_range
+        )
         
-        print(f"✅ Retrieved complete data for {len(tracks_data)} tracks")
+        artists = []
+        for artist in results['items']:
+            artists.append({
+                'id': artist['id'],
+                'name': artist['name'],
+                'genres': artist.get('genres', []),
+                'popularity': artist.get('popularity', 0),
+                'followers': artist['followers'].get('total', 0),
+                'images': artist.get('images', []),
+                'external_url': artist['external_urls']['spotify']
+            })
+        
+        # Cache for 1 hour
+        await cache_service.set_in_cache(cache_key, artists, expiration=3600)
+        
+        print(f"✅ Retrieved {len(artists)} top artists")
+        return artists
         
     except Exception as e:
-        print(f"⚠️ Error getting tracks with features: {e}")
+        print(f"❌ Error getting top artists: {e}")
+        return []
+
+
+async def get_recently_played(
+    access_token: str,
+    limit: int = 50
+) -> List[Dict]:
+    """
+    Get recently played tracks
     
-    return tracks_data
+    Endpoint: GET /me/player/recently-played (WORKING - not restricted)
+    Requires scope: user-read-recently-played
+    """
+    cache_key = f"spotify:recently_played:{access_token[:10]}"
+    cached = await cache_service.get_from_cache(cache_key)
+    
+    if cached:
+        return cached
+    
+    try:
+        sp = get_spotify_client(access_token)
+        
+        print(f"⏮️ Fetching recently played tracks...")
+        results = sp.current_user_recently_played(limit=limit)
+        
+        tracks = []
+        for item in results['items']:
+            track = item['track']
+            tracks.append({
+                'id': track['id'],
+                'name': track['name'],
+                'artists': [
+                    {
+                        'id': artist['id'],
+                        'name': artist['name']
+                    } for artist in track['artists']
+                ],
+                'album': {
+                    'name': track['album']['name'],
+                    'images': track['album']['images']
+                },
+                'played_at': item['played_at'],
+                'context': item.get('context'),
+                'external_url': track['external_urls']['spotify']
+            })
+        
+        # Cache for 2 minutes (recent data changes frequently)
+        await cache_service.set_in_cache(cache_key, tracks, expiration=120)
+        
+        print(f"✅ Retrieved {len(tracks)} recently played tracks")
+        return tracks
+        
+    except Exception as e:
+        print(f"❌ Error getting recently played: {e}")
+        return []
+
+
+async def get_saved_tracks(
+    access_token: str,
+    limit: int = 50
+) -> List[Dict]:
+    """
+    Get user's saved/liked tracks
+    
+    Endpoint: GET /me/tracks (WORKING - not restricted)
+    Requires scope: user-library-read
+    """
+    try:
+        sp = get_spotify_client(access_token)
+        
+        print(f"💚 Fetching saved tracks...")
+        results = sp.current_user_saved_tracks(limit=limit)
+        
+        tracks = []
+        for item in results['items']:
+            track = item['track']
+            tracks.append({
+                'id': track['id'],
+                'name': track['name'],
+                'artists': [
+                    {
+                        'id': artist['id'],
+                        'name': artist['name']
+                    } for artist in track['artists']
+                ],
+                'album': {
+                    'name': track['album']['name'],
+                    'images': track['album']['images']
+                },
+                'added_at': item['added_at'],
+                'popularity': track.get('popularity', 0),
+                'external_url': track['external_urls']['spotify']
+            })
+        
+        print(f"✅ Retrieved {len(tracks)} saved tracks")
+        return tracks
+        
+    except Exception as e:
+        print(f"❌ Error getting saved tracks: {e}")
+        return []
 
 
 async def search_tracks(
     query: str,
-    limit: int = 20,
-    access_token: Optional[str] = None
+    access_token: Optional[str] = None,
+    limit: int = 20
 ) -> List[Dict]:
     """
-    Search for tracks on Spotify.
+    Search for tracks on Spotify
     
-    Args:
-        query: Search query
-        limit: Maximum number of results
-        access_token: User's access token (optional)
-        
-    Returns:
-        List of track information dictionaries
+    Endpoint: GET /search (WORKING - not restricted)
     """
-    try:
-        sp = get_spotify_client(access_token)
-        results = sp.search(q=query, type='track', limit=limit)
-        
-        tracks = []
-        for item in results['tracks']['items']:
-            tracks.append({
-                'id': item['id'],
-                'name': item['name'],
-                'artists': [artist['name'] for artist in item['artists']],
-                'album': item['album']['name'],
-                'popularity': item.get('popularity', 0),
-                'preview_url': item.get('preview_url'),
-                'external_url': item['external_urls'].get('spotify'),
-            })
-        
-        return tracks
-        
-    except spotipy.SpotifyException as e:
-        print(f"⚠️ Spotify API error searching: {e}")
-        return []
-    except Exception as e:
-        print(f"⚠️ Error searching tracks: {e}")
-        return []
-
-
-async def get_recommendations(
-    seed_tracks: Optional[List[str]] = None,
-    seed_artists: Optional[List[str]] = None,
-    seed_genres: Optional[List[str]] = None,
-    target_valence: Optional[float] = None,
-    target_energy: Optional[float] = None,
-    limit: int = 20,
-    access_token: Optional[str] = None
-) -> List[Dict]:
-    """
-    Get track recommendations from Spotify.
-    Enhanced for train_router.py recommendation endpoint.
-    
-    Args:
-        seed_tracks: Up to 5 track IDs
-        seed_artists: Up to 5 artist IDs
-        seed_genres: Up to 5 genre names
-        target_valence: Target valence (0-1)
-        target_energy: Target energy (0-1)
-        limit: Number of recommendations
-        access_token: User's access token (optional)
-        
-    Returns:
-        List of recommended tracks with full metadata
-    """
-    try:
-        sp = get_spotify_client(access_token)
-        
-        # Ensure we don't exceed Spotify's limit of 5 seeds total
-        seeds = {}
-        total_seeds = 0
-        
-        if seed_tracks:
-            max_track_seeds = min(len(seed_tracks), 5)
-            seeds['seed_tracks'] = seed_tracks[:max_track_seeds]
-            total_seeds += max_track_seeds
-        
-        if seed_artists and total_seeds < 5:
-            max_artist_seeds = min(len(seed_artists), 5 - total_seeds)
-            seeds['seed_artists'] = seed_artists[:max_artist_seeds]
-            total_seeds += max_artist_seeds
-        
-        if seed_genres and total_seeds < 5:
-            max_genre_seeds = min(len(seed_genres), 5 - total_seeds)
-            seeds['seed_genres'] = seed_genres[:max_genre_seeds]
-            total_seeds += max_genre_seeds
-        
-        # If no seeds provided, use popular genres as default
-        if total_seeds == 0:
-            print("⚠️ No seeds provided, using default genres")
-            seeds['seed_genres'] = ['pop', 'rock']
-        
-        # Add target features if specified
-        kwargs = {}
-        if target_valence is not None:
-            kwargs['target_valence'] = max(0.0, min(1.0, target_valence))
-        if target_energy is not None:
-            kwargs['target_energy'] = max(0.0, min(1.0, target_energy))
-        
-        print(f"🎯 Getting recommendations with seeds: {seeds}")
-        if kwargs:
-            print(f"   Target features: {kwargs}")
-        
-        results = sp.recommendations(limit=limit, **seeds, **kwargs)
-        
-        recommendations = []
-        for track in results['tracks']:
-            recommendations.append({
-                'id': track['id'],
-                'name': track['name'],
-                'artists': [artist['name'] for artist in track['artists']],
-                'artist_ids': [artist['id'] for artist in track['artists']],
-                'album': track['album']['name'],
-                'duration_ms': track.get('duration_ms', 0),
-                'popularity': track.get('popularity', 0),
-                'preview_url': track.get('preview_url'),
-                'external_url': track['external_urls'].get('spotify'),
-                'uri': track['uri']
-            })
-        
-        print(f"✅ Got {len(recommendations)} recommendations")
-        return recommendations
-        
-    except spotipy.SpotifyException as e:
-        print(f"⚠️ Spotify API error getting recommendations: {e}")
-        # Return empty list instead of raising to allow graceful degradation
-        return []
-    except Exception as e:
-        print(f"⚠️ Error getting recommendations: {e}")
-        return []
-
-
-async def get_available_genre_seeds(
-    access_token: Optional[str] = None
-) -> List[str]:
-    """
-    Get available genre seeds for recommendations.
-    
-    Args:
-        access_token: User's access token (optional)
-        
-    Returns:
-        List of genre names
-    """
-    cache_key = "spotify:genre_seeds"
-    
-    # Check cache (genres don't change often)
+    cache_key = f"spotify:search:{query}:{limit}"
     cached = await cache_service.get_from_cache(cache_key)
+    
     if cached:
         return cached
     
     try:
         sp = get_spotify_client(access_token)
-        genres = sp.recommendation_genre_seeds()
         
-        genre_list = genres.get('genres', [])
+        print(f"🔍 Searching Spotify for: {query}")
+        results = sp.search(q=query, type='track', limit=limit)
         
-        # Cache for 1 week
-        await cache_service.set_in_cache(cache_key, genre_list, expiration=604800)
+        tracks = []
+        for track in results['tracks']['items']:
+            tracks.append({
+                'id': track['id'],
+                'name': track['name'],
+                'artists': [
+                    {
+                        'id': artist['id'],
+                        'name': artist['name']
+                    } for artist in track['artists']
+                ],
+                'album': {
+                    'name': track['album']['name'],
+                    'images': track['album']['images']
+                },
+                'popularity': track.get('popularity', 0),
+                'duration_ms': track['duration_ms'],
+                'preview_url': track.get('preview_url'),
+                'external_url': track['external_urls']['spotify']
+            })
         
-        return genre_list
+        # Cache for 1 hour
+        await cache_service.set_in_cache(cache_key, tracks, expiration=3600)
+        
+        print(f"✅ Found {len(tracks)} tracks on Spotify")
+        return tracks
         
     except Exception as e:
-        print(f"⚠️ Error getting genre seeds: {e}")
+        print(f"❌ Error searching tracks: {e}")
         return []
-
-
-async def get_artist_genres(
-    artist_id: str,
-    access_token: Optional[str] = None
-) -> List[str]:
-    """
-    Get genres for a specific artist.
-    Helper function for genre-based weighting in model_service.
-    
-    Args:
-        artist_id: Spotify artist ID
-        access_token: User's access token (optional)
-        
-    Returns:
-        List of genre names
-    """
-    artist_info = await get_artist_info(artist_id, access_token)
-    if artist_info:
-        return artist_info.get('genres', [])
-    return []
 
 
 async def batch_get_tracks(
     track_ids: List[str],
-    access_token: Optional[str] = None,
-    include_features: bool = True
+    access_token: Optional[str] = None
 ) -> List[Dict]:
     """
-    Efficiently batch fetch tracks with optional audio features.
-    Used by train_router.py for recommendation enrichment.
+    Get multiple tracks in batch
     
-    Args:
-        track_ids: List of Spotify track IDs
-        access_token: User's access token (optional)
-        include_features: Whether to include audio features
-        
-    Returns:
-        List of track dictionaries with optional features
+    Endpoint: GET /tracks (WORKING - not restricted)
     """
     if not track_ids:
         return []
     
-    if include_features:
-        return await get_tracks_with_features(track_ids, access_token)
-    
-    # Fetch just track info without features (faster)
-    tracks_data = []
-    
     try:
         sp = get_spotify_client(access_token)
         
+        print(f"📦 Batch fetching {len(track_ids)} tracks from Spotify...")
+        
+        # Spotify allows max 50 tracks per request
+        all_tracks = []
         for i in range(0, len(track_ids), 50):
-            batch_ids = track_ids[i:i+50]
+            batch = track_ids[i:i+50]
+            results = sp.tracks(batch)
             
-            try:
-                tracks_response = sp.tracks(batch_ids)
+            for track in results['tracks']:
+                if not track:
+                    continue
                 
-                for track in tracks_response['tracks']:
-                    if not track:
-                        continue
-                    
-                    tracks_data.append({
-                        'id': track['id'],
-                        'name': track['name'],
-                        'artists': [artist['name'] for artist in track['artists']],
-                        'artist_ids': [artist['id'] for artist in track['artists']],
-                        'album': track['album']['name'],
-                        'duration_ms': track['duration_ms'],
-                        'popularity': track.get('popularity', 0),
-                        'external_url': track['external_urls'].get('spotify'),
-                    })
-                    
-            except spotipy.SpotifyException as e:
-                print(f"⚠️ Spotify API error in batch: {e}")
-                continue
+                all_tracks.append({
+                    'id': track['id'],
+                    'name': track['name'],
+                    'artists': [
+                        {
+                            'id': artist['id'],
+                            'name': artist['name']
+                        } for artist in track['artists']
+                    ],
+                    'album': {
+                        'name': track['album']['name'],
+                        'images': track['album']['images']
+                    },
+                    'duration_ms': track['duration_ms'],
+                    'popularity': track.get('popularity', 0),
+                    'external_url': track['external_urls']['spotify']
+                })
+        
+        print(f"✅ Batch retrieved {len(all_tracks)} tracks")
+        return all_tracks
         
     except Exception as e:
-        print(f"⚠️ Error batch fetching tracks: {e}")
-    
-    return tracks_data
+        print(f"❌ Error batch getting tracks: {e}")
+        return []
 
 
-# Utility functions for testing
+# ============================================
+# Helper Functions
+# ============================================
 
-async def test_spotify_service():
-    """
-    Test the Spotify service with sample operations.
-    """
+def extract_track_artists_names(track: Dict) -> List[str]:
+    """Extract artist names from track dict"""
+    if 'artists' in track:
+        return [artist['name'] for artist in track['artists']]
+    return []
+
+
+def get_primary_artist_name(track: Dict) -> str:
+    """Get primary artist name"""
+    if 'artists' in track and track['artists']:
+        return track['artists'][0]['name']
+    return "Unknown Artist"
+
+
+async def test_spotify_service(access_token: str):
+    """Test Spotify service endpoints"""
     print("\n" + "="*60)
-    print("🧪 Testing Spotify Service")
+    print("🧪 Testing Spotify Service (Hybrid Approach)")
     print("="*60)
     
-    # Test track IDs (popular songs)
-    test_track_ids = [
-        "3n3Ppam7vgaVa1iaRUc9Lp",  # Mr. Brightside - The Killers
-        "0VjIjW4GlUZAMYd2vXMi3b",  # Blinding Lights - The Weeknd
-    ]
+    print("\n1. Testing user playlists...")
+    playlists = await get_user_playlists(access_token, limit=5)
+    print(f"   Found {len(playlists)} playlists")
     
-    print("\n1. Testing audio features...")
-    features = await get_audio_features(test_track_ids)
-    print(f"   Retrieved {len(features)} feature sets")
+    print("\n2. Testing currently playing...")
+    current = await get_currently_playing(access_token)
+    if current and current.get('is_playing'):
+        print(f"   Now playing: {current['track']['name']}")
     
-    if features and features[0]:
-        print(f"   Sample features:")
-        print(f"   Valence: {features[0]['valence']:.3f}")
-        print(f"   Energy: {features[0]['energy']:.3f}")
-        print(f"   Tempo: {features[0]['tempo']:.1f} BPM")
+    print("\n3. Testing top tracks...")
+    top_tracks = await get_user_top_tracks(access_token, limit=5)
+    print(f"   Found {len(top_tracks)} top tracks")
     
-    print("\n2. Testing track info...")
-    if test_track_ids:
-        track_info = await get_track_info(test_track_ids[0])
-        if track_info:
-            print(f"   Track: {track_info['name']}")
-            print(f"   Artist: {', '.join(track_info['artists'])}")
-            print(f"   Popularity: {track_info['popularity']}")
+    print("\n4. Testing search...")
+    results = await search_tracks("Happy", limit=3)
+    print(f"   Found {len(results)} results")
     
-    print("\n3. Testing search...")
-    search_results = await search_tracks("happy", limit=5)
-    print(f"   Found {len(search_results)} tracks")
-    for track in search_results[:3]:
-        print(f"   - {track['name']} by {', '.join(track['artists'])}")
-    
-    print("\n4. Testing recommendations...")
-    recommendations = await get_recommendations(
-        seed_tracks=test_track_ids[:1],
-        target_valence=0.8,
-        target_energy=0.7,
-        limit=5
-    )
-    print(f"   Got {len(recommendations)} recommendations")
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(test_spotify_service())
+    print("\n" + "="*60)
+    print("✅ Testing complete!")
+    print("="*60)

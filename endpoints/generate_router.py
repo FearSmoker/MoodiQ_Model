@@ -1,189 +1,680 @@
-from fastapi import APIRouter, HTTPException
+"""
+Updated Generate Router - Hybrid Approach
+Uses Spotify API for: user data, top tracks
+Uses Last.fm for: recommendations, similar artists
+"""
+
+from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
-from typing import List, Optional
-from services import spotify_service, model_service
+from typing import List, Optional, Dict, Any
+from services import music_service, model_service, lyrics_service, spotify_service, cache_service
 
 router = APIRouter()
+
 
 class GeneratePlaylistRequest(BaseModel):
     target_mood: str  # "Happy", "Sad", "Calm", "Energetic"
     user_id: str
-    access_token: str
+    seed_track_name: Optional[str] = None
+    seed_artist_name: Optional[str] = None
+    seed_track_id: Optional[str] = None  # NEW: Spotify track ID
     limit: int = 20
-    seed_tracks: Optional[List[str]] = []
 
-@router.post("/playlist")
-async def generate_mood_playlist(request: GeneratePlaylistRequest):
-    """
-    Generate playlist for target mood using existing model
-    """
-    # 1. Map mood to audio features
-    mood_profiles = {
-        "Happy": {"target_valence": 0.8, "target_energy": 0.7},
-        "Sad": {"target_valence": 0.2, "target_energy": 0.3},
-        "Calm": {"target_valence": 0.5, "target_energy": 0.3},
-        "Energetic": {"target_valence": 0.7, "target_energy": 0.9}
-    }
-    
-    if request.target_mood not in mood_profiles:
-        raise HTTPException(400, f"Invalid mood. Choose from: {list(mood_profiles.keys())}")
-    
-    profile = mood_profiles[request.target_mood]
-    
-    # 2. Get recommendations from Spotify
-    recommendations = await spotify_service.get_recommendations(
-        seed_tracks=request.seed_tracks[:5] if request.seed_tracks else None,
-        target_valence=profile["target_valence"],
-        target_energy=profile["target_energy"],
-        limit=request.limit * 2,  # Get more, filter later
-        access_token=request.access_token
-    )
-    
-    # 3. Get audio features
-    track_ids = [track['id'] for track in recommendations]
-    audio_features = await spotify_service.get_audio_features(track_ids, request.access_token)
-    
-    # 4. Use YOUR MODEL to verify mood matches
-    filtered_tracks = []
-    for i, track in enumerate(recommendations):
-        features = audio_features[i]
-        if not features:
-            continue
-        
-        # Predict mood using your trained model
-        mood_data = await model_service.predict_mood_from_features(
-            features, 
-            {"polarity": 0.0, "subjectivity": 0.0},  # No lyrics for speed
-            user_id=request.user_id
-        )
-        
-        # Keep only tracks that match target mood
-        if mood_data['fused_mood'] == request.target_mood:
-            track['predicted_mood'] = mood_data['fused_mood']
-            track['confidence'] = mood_data['confidence']
-            track['features'] = features
-            filtered_tracks.append(track)
-        
-        if len(filtered_tracks) >= request.limit:
-            break
-    
-    # 5. Optimize flow
-    if len(filtered_tracks) > 1:
-        optimization = model_service.optimize_flow_dp(
-            filtered_tracks,
-            profile,  # Start mood
-            profile   # End mood
-        )
-        
-        # Reorder tracks
-        ordered_tracks = [filtered_tracks[i] for i in optimization['optimizedOrder']]
-    else:
-        ordered_tracks = filtered_tracks
-    
-    return {
-        "target_mood": request.target_mood,
-        "tracks": ordered_tracks,
-        "total": len(ordered_tracks),
-        "flow_score": optimization.get('flowScore', 1.0) if len(filtered_tracks) > 1 else 1.0
-    }
 
 class GenerateActivityRequest(BaseModel):
     activity: str  # "study", "workout", "party", "sleep", "work", "meditation"
     user_id: str
-    access_token: str
+    seed_track_name: Optional[str] = None
+    seed_artist_name: Optional[str] = None
+    seed_track_id: Optional[str] = None  # NEW: Spotify track ID
     limit: int = 20
 
-@router.post("/activity")
-async def generate_activity_playlist(request: GenerateActivityRequest):
+
+# ============================================
+# HYBRID PLAYLIST GENERATION
+# ============================================
+
+@router.post("/playlist")
+async def generate_mood_playlist(
+    request: GeneratePlaylistRequest,
+    authorization: str = Header(None)
+):
     """
-    Generate playlist for specific activity
+    Generate playlist for target mood (HYBRID APPROACH)
+    
+    Uses:
+    - Spotify API: If seed_track_id provided, get track info
+    - Last.fm: Get recommendations based on seed
+    - Multi-API: Audio features and mood prediction
     """
-    # Activity → Mood + Audio Feature Mapping
-    activity_profiles = {
-        "study": {
-            "mood": "Calm",
-            "target_valence": 0.4,
-            "target_energy": 0.3,
-            "target_instrumentalness": 0.7,  # Prefer instrumental
-            "target_acousticness": 0.6
-        },
-        "workout": {
-            "mood": "Energetic",
-            "target_valence": 0.7,
-            "target_energy": 0.95,
-            "target_tempo": 140,
-            "target_danceability": 0.8
-        },
-        "party": {
-            "mood": "Happy",
-            "target_valence": 0.9,
-            "target_energy": 0.85,
-            "target_danceability": 0.9
-        },
-        "sleep": {
-            "mood": "Calm",
-            "target_valence": 0.3,
-            "target_energy": 0.15,
-            "target_acousticness": 0.8,
-            "target_tempo": 60
-        },
-        "meditation": {
-            "mood": "Calm",
-            "target_valence": 0.5,
-            "target_energy": 0.2,
-            "target_instrumentalness": 0.9
-        },
-        "work": {
-            "mood": "Calm",
-            "target_valence": 0.6,
-            "target_energy": 0.5,
-            "target_instrumentalness": 0.5
-        }
-    }
-    
-    activity_lower = request.activity.lower()
-    if activity_lower not in activity_profiles:
-        raise HTTPException(400, f"Unknown activity. Choose from: {list(activity_profiles.keys())}")
-    
-    profile = activity_profiles[activity_lower]
-    target_mood = profile.pop("mood")
-    
-    # Get recommendations with activity-specific features
-    recommendations = await spotify_service.get_recommendations(
-        limit=request.limit * 2,
-        access_token=request.access_token,
-        **profile
-    )
-    
-    # Filter using model (same as generate_mood_playlist)
-    track_ids = [track['id'] for track in recommendations]
-    audio_features = await spotify_service.get_audio_features(track_ids, request.access_token)
-    
-    filtered_tracks = []
-    for i, track in enumerate(recommendations):
-        features = audio_features[i]
-        if not features:
-            continue
+    try:
+        print(f"🎯 Generating {request.target_mood} playlist")
         
-        mood_data = await model_service.predict_mood_from_features(
-            features, 
-            {"polarity": 0.0, "subjectivity": 0.0},
-            user_id=request.user_id
+        # Validate mood
+        valid_moods = ["Happy", "Sad", "Calm", "Energetic"]
+        if request.target_mood not in valid_moods:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid mood. Choose from: {', '.join(valid_moods)}"
+            )
+        
+        # Determine seed track
+        seed_track_name = request.seed_track_name
+        seed_artist_name = request.seed_artist_name
+        
+        # If Spotify track ID provided and authorization available, get track info from Spotify
+        if request.seed_track_id and authorization and authorization.startswith('Bearer '):
+            try:
+                access_token = authorization.replace('Bearer ', '')
+                track_info = await spotify_service.get_track_info(request.seed_track_id, access_token)
+                
+                if track_info:
+                    seed_track_name = track_info['name']
+                    seed_artist_name = spotify_service.get_primary_artist_name(track_info)
+                    print(f"✅ Got seed from Spotify: {seed_track_name} by {seed_artist_name}")
+            except Exception as e:
+                print(f"⚠️ Could not get Spotify track info: {e}")
+        
+        # If still no seed, use defaults based on mood
+        if not seed_track_name or not seed_artist_name:
+            mood_seeds = {
+                "Happy": ("Happy", "Pharrell Williams"),
+                "Sad": ("Someone Like You", "Adele"),
+                "Calm": ("Weightless", "Marconi Union"),
+                "Energetic": ("Eye of the Tiger", "Survivor")
+            }
+            seed_track_name, seed_artist_name = mood_seeds[request.target_mood]
+        
+        print(f"🌱 Using seed: {seed_track_name} by {seed_artist_name}")
+        
+        # Get recommendations from Last.fm
+        recommendations = await music_service.get_recommendations(
+            seed_track_name=seed_track_name,
+            seed_artist_name=seed_artist_name,
+            target_mood=request.target_mood,
+            limit=request.limit * 2  # Get more for filtering
         )
         
-        track['predicted_mood'] = mood_data['fused_mood']
-        track['confidence'] = mood_data['confidence']
-        track['features'] = features
-        track['activity_match'] = mood_data['fused_mood'] == target_mood
+        if not recommendations:
+            raise HTTPException(
+                status_code=404,
+                detail="No recommendations found. Try a different seed track."
+            )
         
-        filtered_tracks.append(track)
+        print(f"✅ Found {len(recommendations)} candidate tracks from Last.fm")
         
-        if len(filtered_tracks) >= request.limit:
-            break
+        # Filter and analyze
+        filtered_tracks = []
+        
+        for track in recommendations:
+            try:
+                # Already has features from get_recommendations
+                features = track.get('features')
+                
+                if not features:
+                    continue
+                
+                # Get lyrics sentiment
+                lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
+                    track['name'],
+                    track['artist']
+                )
+                
+                # Predict mood
+                mood_data = await model_service.predict_mood_from_features(
+                    features,
+                    lyrics_sentiment,
+                    user_id=request.user_id,
+                    genre=None
+                )
+                
+                # Check if matches target mood
+                if mood_data['fused_mood'] == request.target_mood:
+                    track['predicted_mood'] = mood_data['fused_mood']
+                    track['confidence'] = mood_data['confidence']
+                    track['mood_details'] = mood_data
+                    filtered_tracks.append(track)
+                
+                if len(filtered_tracks) >= request.limit:
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ Error processing track: {e}")
+                continue
+        
+        if not filtered_tracks:
+            print("⚠️ No exact mood matches, returning closest matches")
+            filtered_tracks = recommendations[:request.limit]
+        
+        print(f"✅ Filtered to {len(filtered_tracks)} tracks matching {request.target_mood}")
+        
+        # Optimize flow if we have enough tracks
+        if len(filtered_tracks) > 2:
+            mood_profiles = {
+                "Happy": {"valence": 0.8, "energy": 0.7},
+                "Sad": {"valence": 0.2, "energy": 0.3},
+                "Calm": {"valence": 0.5, "energy": 0.3},
+                "Energetic": {"valence": 0.7, "energy": 0.9}
+            }
+            
+            target_profile = mood_profiles[request.target_mood]
+            
+            optimization = model_service.optimize_flow_dp(
+                filtered_tracks,
+                target_profile,
+                target_profile
+            )
+            
+            ordered_tracks = [filtered_tracks[i] for i in optimization['optimizedOrder']]
+            flow_score = optimization['flowScore']
+        else:
+            ordered_tracks = filtered_tracks
+            flow_score = 1.0
+        
+        return {
+            "target_mood": request.target_mood,
+            "tracks": ordered_tracks,
+            "total": len(ordered_tracks),
+            "flow_score": flow_score,
+            "seed_track": {
+                "name": seed_track_name,
+                "artist": seed_artist_name,
+                "id": request.seed_track_id
+            },
+            "source": "lastfm_recommendations",
+            "approach": "hybrid"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating mood playlist: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/activity")
+async def generate_activity_playlist(
+    request: GenerateActivityRequest,
+    authorization: str = Header(None)
+):
+    """
+    Generate playlist for specific activity (HYBRID APPROACH)
+    """
+    try:
+        print(f"🏃 Generating playlist for activity: {request.activity}")
+        
+        activity_profiles = {
+            "study": {
+                "mood": "Calm",
+                "seed": ("Clair de Lune", "Claude Debussy")
+            },
+            "workout": {
+                "mood": "Energetic",
+                "seed": ("Stronger", "Kanye West")
+            },
+            "party": {
+                "mood": "Happy",
+                "seed": ("Uptown Funk", "Mark Ronson")
+            },
+            "sleep": {
+                "mood": "Calm",
+                "seed": ("Weightless", "Marconi Union")
+            },
+            "meditation": {
+                "mood": "Calm",
+                "seed": ("Om Mani Padme Hum", "Imee Ooi")
+            },
+            "work": {
+                "mood": "Calm",
+                "seed": ("Lofi Hip Hop", "Various Artists")
+            }
+        }
+        
+        activity_lower = request.activity.lower()
+        
+        if activity_lower not in activity_profiles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown activity. Choose from: {', '.join(activity_profiles.keys())}"
+            )
+        
+        profile = activity_profiles[activity_lower]
+        
+        if not request.seed_track_name:
+            request.seed_track_name, request.seed_artist_name = profile['seed']
+        
+        mood_request = GeneratePlaylistRequest(
+            target_mood=profile['mood'],
+            user_id=request.user_id,
+            seed_track_name=request.seed_track_name,
+            seed_artist_name=request.seed_artist_name,
+            seed_track_id=request.seed_track_id,
+            limit=request.limit
+        )
+        
+        result = await generate_mood_playlist(mood_request, authorization)
+        
+        result['activity'] = request.activity
+        result['activity_profile'] = profile
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating activity playlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# SPOTIFY-BASED GENERATION (NEW)
+# ============================================
+
+@router.post("/spotify/from-top-tracks")
+async def generate_from_spotify_top_tracks(
+    request: Dict[str, Any],
+    authorization: str = Header(None)
+):
+    """
+    Generate playlist based on user's Spotify top tracks (HYBRID)
     
+    Uses:
+    - Spotify API: Get user's top tracks
+    - Last.fm: Get similar tracks for each top track
+    - Multi-API: Audio features and mood prediction
+    """
+    try:
+        if not authorization or not authorization.startswith('Bearer '):
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        
+        access_token = authorization.replace('Bearer ', '')
+        user_id = request.get('user_id')
+        target_mood = request.get('target_mood')
+        limit = request.get('limit', 20)
+        time_range = request.get('time_range', 'medium_term')  # short_term, medium_term, long_term
+        
+        print(f"🎵 Generating playlist from user's top tracks")
+        
+        # Get user's top tracks from Spotify
+        top_tracks = await spotify_service.get_user_top_tracks(
+            access_token,
+            time_range=time_range,
+            limit=5  # Use top 5 as seeds
+        )
+        
+        if not top_tracks:
+            raise HTTPException(status_code=404, detail="No top tracks found")
+        
+        print(f"✅ Got {len(top_tracks)} top tracks from Spotify")
+        
+        # Generate recommendations from each top track
+        all_recommendations = []
+        
+        for top_track in top_tracks[:3]:  # Use top 3 as seeds
+            track_name = top_track['name']
+            artist_name = top_track['artists'][0]['name']
+            
+            print(f"🌱 Getting recommendations for: {track_name}")
+            
+            recommendations = await music_service.get_similar_tracks_lastfm(
+                track_name,
+                artist_name,
+                limit=10
+            )
+            
+            all_recommendations.extend(recommendations)
+        
+        # Remove duplicates
+        seen = set()
+        unique_recommendations = []
+        for rec in all_recommendations:
+            key = f"{rec['name']}:{rec['artist']}"
+            if key not in seen:
+                seen.add(key)
+                unique_recommendations.append(rec)
+        
+        print(f"✅ Got {len(unique_recommendations)} unique recommendations")
+        
+        # Analyze and filter
+        analyzed_tracks = []
+        
+        for track in unique_recommendations:
+            try:
+                # Get audio features
+                features = await music_service.get_audio_features(
+                    track['name'],
+                    track['artist']
+                )
+                
+                if not features:
+                    continue
+                
+                # Get lyrics sentiment
+                lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
+                    track['name'],
+                    track['artist']
+                )
+                
+                # Predict mood
+                mood_data = await model_service.predict_mood_from_features(
+                    features,
+                    lyrics_sentiment,
+                    user_id=user_id
+                )
+                
+                # Filter by target mood if specified
+                if target_mood and mood_data['fused_mood'] != target_mood:
+                    continue
+                
+                track['features'] = features
+                track['mood'] = mood_data['fused_mood']
+                track['confidence'] = mood_data['confidence']
+                track['mood_details'] = mood_data
+                
+                analyzed_tracks.append(track)
+                
+                if len(analyzed_tracks) >= limit:
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ Error analyzing track: {e}")
+                continue
+        
+        return {
+            "source": "spotify_top_tracks",
+            "top_tracks_used": [
+                {"name": t['name'], "artists": [a['name'] for a in t['artists']]}
+                for t in top_tracks[:3]
+            ],
+            "tracks": analyzed_tracks,
+            "total": len(analyzed_tracks),
+            "target_mood": target_mood,
+            "approach": "hybrid"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating from top tracks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/spotify/from-recently-played")
+async def generate_from_recently_played(
+    request: Dict[str, Any],
+    authorization: str = Header(None)
+):
+    """
+    Generate playlist based on recently played tracks (HYBRID)
+    
+    Uses:
+    - Spotify API: Get recently played tracks
+    - Last.fm: Get similar tracks
+    - Multi-API: Audio features and mood prediction
+    """
+    try:
+        if not authorization or not authorization.startswith('Bearer '):
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        
+        access_token = authorization.replace('Bearer ', '')
+        user_id = request.get('user_id')
+        target_mood = request.get('target_mood')
+        limit = request.get('limit', 20)
+        
+        print(f"⏮️ Generating playlist from recently played tracks")
+        
+        # Get recently played from Spotify
+        recent_tracks = await spotify_service.get_recently_played(
+            access_token,
+            limit=10
+        )
+        
+        if not recent_tracks:
+            raise HTTPException(status_code=404, detail="No recently played tracks found")
+        
+        print(f"✅ Got {len(recent_tracks)} recently played tracks")
+        
+        # Use most recent track as seed
+        seed_track = recent_tracks[0]
+        track_name = seed_track['name']
+        artist_name = seed_track['artists'][0]['name']
+        
+        print(f"🌱 Using seed: {track_name} by {artist_name}")
+        
+        # Get recommendations
+        recommendations = await music_service.get_recommendations(
+            seed_track_name=track_name,
+            seed_artist_name=artist_name,
+            target_mood=target_mood,
+            limit=limit * 2
+        )
+        
+        if not recommendations:
+            raise HTTPException(status_code=404, detail="No recommendations found")
+        
+        # Analyze and filter
+        analyzed_tracks = []
+        
+        for track in recommendations:
+            try:
+                features = track.get('features')
+                if not features:
+                    continue
+                
+                lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
+                    track['name'],
+                    track['artist']
+                )
+                
+                mood_data = await model_service.predict_mood_from_features(
+                    features,
+                    lyrics_sentiment,
+                    user_id=user_id
+                )
+                
+                if target_mood and mood_data['fused_mood'] != target_mood:
+                    continue
+                
+                track['mood'] = mood_data['fused_mood']
+                track['confidence'] = mood_data['confidence']
+                track['mood_details'] = mood_data
+                
+                analyzed_tracks.append(track)
+                
+                if len(analyzed_tracks) >= limit:
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ Error analyzing track: {e}")
+                continue
+        
+        return {
+            "source": "recently_played",
+            "seed_track": {
+                "name": track_name,
+                "artist": artist_name,
+                "played_at": seed_track.get('played_at')
+            },
+            "tracks": analyzed_tracks,
+            "total": len(analyzed_tracks),
+            "target_mood": target_mood,
+            "approach": "hybrid"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating from recently played: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# DISCOVERY ENDPOINTS
+# ============================================
+
+@router.post("/discover")
+async def discover_tracks(request: Dict[str, Any]):
+    """
+    Discover new tracks based on artist (Multi-API)
+    
+    Uses Last.fm similar artists to find new music
+    """
+    try:
+        artist_name = request.get('artist_name')
+        user_id = request.get('user_id')
+        limit = request.get('limit', 20)
+        
+        if not artist_name:
+            raise HTTPException(status_code=400, detail="Artist name is required")
+        
+        print(f"🔍 Discovering tracks similar to {artist_name}")
+        
+        similar_artists = await music_service.get_similar_artists_lastfm(
+            artist_name,
+            limit=10
+        )
+        
+        if not similar_artists:
+            return {
+                "message": "No similar artists found",
+                "tracks": []
+            }
+        
+        discovered_tracks = []
+        
+        for artist in similar_artists[:5]:
+            try:
+                search_query = f"{artist['name']} official"
+                tracks = await music_service.search_tracks(search_query, limit=3)
+                
+                for track in tracks:
+                    features = await music_service.get_audio_features(
+                        track['name'],
+                        track['artists'][0] if track['artists'] else artist['name']
+                    )
+                    
+                    if features:
+                        lyrics_sentiment = {"polarity": 0.0, "subjectivity": 0.0}
+                        
+                        mood_data = await model_service.predict_mood_from_features(
+                            features,
+                            lyrics_sentiment,
+                            user_id=user_id
+                        )
+                        
+                        track['features'] = features
+                        track['mood'] = mood_data['fused_mood']
+                        track['confidence'] = mood_data['confidence']
+                        track['similar_to_artist'] = artist_name
+                        track['match_score'] = artist['match_score']
+                        
+                        discovered_tracks.append(track)
+                
+                if len(discovered_tracks) >= limit:
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ Error discovering from artist {artist['name']}: {e}")
+                continue
+        
+        discovered_tracks.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+        
+        return {
+            "seed_artist": artist_name,
+            "discovered_tracks": discovered_tracks[:limit],
+            "total": len(discovered_tracks),
+            "similar_artists_explored": len(similar_artists)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error discovering tracks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/personalized")
+async def generate_personalized_playlist(
+    request: Dict[str, Any],
+    authorization: str = Header(None)
+):
+    """
+    Generate highly personalized playlist using user's feedback history
+    """
+    try:
+        user_id = request.get('user_id')
+        limit = request.get('limit', 30)
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID is required")
+        
+        print(f"🎯 Generating personalized playlist for user {user_id}")
+        
+        user_stats_key = f"user_stats:{user_id}"
+        user_stats = await cache_service.get_from_cache(user_stats_key)
+        
+        if not user_stats or user_stats.get('feedback_count', 0) < 5:
+            return {
+                "message": "Not enough feedback data for personalization. Please provide more feedback on tracks.",
+                "tracks": [],
+                "feedback_count": user_stats.get('feedback_count', 0) if user_stats else 0,
+                "min_required": 5
+            }
+        
+        mood_corrections = user_stats.get('mood_corrections', {})
+        if mood_corrections:
+            favorite_mood = max(mood_corrections, key=mood_corrections.get)
+        else:
+            favorite_mood = "Happy"
+        
+        print(f"📊 User's favorite mood: {favorite_mood}")
+        
+        mood_request = GeneratePlaylistRequest(
+            target_mood=favorite_mood,
+            user_id=user_id,
+            limit=limit
+        )
+        
+        result = await generate_mood_playlist(mood_request, authorization)
+        
+        result['personalized'] = True
+        result['user_preferences'] = {
+            "favorite_mood": favorite_mood,
+            "mood_distribution": mood_corrections,
+            "feedback_count": user_stats.get('feedback_count', 0)
+        }
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating personalized playlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/health")
+async def health_check():
+    """Health check endpoint"""
     return {
-        "activity": request.activity,
-        "target_mood": target_mood,
-        "tracks": filtered_tracks,
-        "total": len(filtered_tracks)
+        "status": "healthy",
+        "service": "playlist_generation",
+        "approach": "hybrid",
+        "features": [
+            "Mood-based generation (Last.fm)",
+            "Activity-based generation",
+            "Discovery engine (Last.fm similar artists)",
+            "Personalized playlists (user feedback)",
+            "Spotify top tracks integration",
+            "Spotify recently played integration",
+            "Flow optimization (Dynamic Programming)"
+        ],
+        "data_sources": {
+            "recommendations": "Last.fm",
+            "user_data": "Spotify API",
+            "audio_features": "AcousticBrainz + MusicBrainz",
+            "mood_prediction": "ML Model + Lyrics"
+        }
     }

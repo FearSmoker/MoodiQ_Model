@@ -14,11 +14,13 @@ from . import lyrics_service
 from . import model_service
 from . import spotify_service
 from . import nlp_service
+from . import music_service
 
 __all__ = [
     'cache_service',
     'lyrics_service',
     'model_service',
     'spotify_service',
+    'music_service',
     'nlp_service'
 ]
