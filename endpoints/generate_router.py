@@ -1,6 +1,6 @@
 """
-Updated Generate Router - COMPLETE VERSION
-All endpoints preserved with proper mood mapping
+Updated Generate Router - 12 Moods Multi-Tag Compatible
+All endpoints updated to work with extended mood system
 """
 
 from fastapi import APIRouter, HTTPException, Header
@@ -30,7 +30,7 @@ class GenerateActivityRequest(BaseModel):
 
 
 # ============================================
-# HYBRID PLAYLIST GENERATION
+# HYBRID PLAYLIST GENERATION WITH 12 MOODS
 # ============================================
 
 @router.post("/playlist")
@@ -39,16 +39,16 @@ async def generate_mood_playlist(
     authorization: str = Header(None)
 ):
     """
-    Generate playlist for target mood (HYBRID APPROACH)
-    NOW WITH MOOD MAPPING - Handles ANY mood request
+    Generate playlist for target mood (12 Moods + Multi-Tag)
+    NOW WITH EXTENDED MOOD MAPPING - Handles ANY mood request
     """
     try:
-        # Map external mood to base mood
-        base_mood = model_service.map_external_mood_to_base(request.target_mood)
+        # Map external mood to extended mood (12 moods)
+        extended_mood = model_service.map_external_mood_to_extended(request.target_mood)
         
         print(f"🎯 Generating playlist")
         print(f"   Requested mood: {request.target_mood}")
-        print(f"   Base mood: {base_mood}")
+        print(f"   Extended mood: {extended_mood}")
         
         # Determine seed track
         seed_track_name = request.seed_track_name
@@ -67,23 +67,38 @@ async def generate_mood_playlist(
             except Exception as e:
                 print(f"⚠️ Could not get Spotify track info: {e}")
         
-        # If still no seed, use defaults based on BASE mood
+        # If still no seed, use defaults based on EXTENDED mood
         if not seed_track_name or not seed_artist_name:
             mood_seeds = {
-                "Happy": ("Happy", "Pharrell Williams"),
-                "Sad": ("Someone Like You", "Adele"),
-                "Calm": ("Weightless", "Marconi Union"),
-                "Energetic": ("Eye of the Tiger", "Survivor")
+                "Joyful": ("Happy", "Pharrell Williams"),
+                "Excited": ("Can't Stop the Feeling", "Justin Timberlake"),
+                "Party": ("Uptown Funk", "Mark Ronson"),
+                "Melancholic": ("Someone Like You", "Adele"),
+                "Dreamy": ("Breathe Me", "Sia"),
+                "Relaxed": ("Weightless", "Marconi Union"),
+                "Chill": ("Electric Feel", "MGMT"),
+                "Focused": ("Clair de Lune", "Claude Debussy"),
+                "Romantic": ("Thinking Out Loud", "Ed Sheeran"),
+                "Motivated": ("Stronger", "Kanye West"),
+                "Angry": ("Break Stuff", "Limp Bizkit"),
+                "Ambient": ("Avril 14th", "Aphex Twin")
             }
-            seed_track_name, seed_artist_name = mood_seeds[base_mood]
+            seed_track_name, seed_artist_name = mood_seeds.get(
+                extended_mood, 
+                ("Happy", "Pharrell Williams")
+            )
         
         print(f"🌱 Using seed: {seed_track_name} by {seed_artist_name}")
+        
+        # Get base moods associated with this extended mood
+        base_moods = model_service.EXTENDED_MOODS[extended_mood]["base_moods"]
+        primary_base_mood = base_moods[0]  # Use first base mood for filtering
         
         # Get recommendations from Last.fm
         recommendations = await music_service.get_recommendations(
             seed_track_name=seed_track_name,
             seed_artist_name=seed_artist_name,
-            target_mood=base_mood,  # Use base mood for filtering
+            target_mood=primary_base_mood,  # Use base mood for Last.fm
             limit=request.limit * 2  # Get more for filtering
         )
         
@@ -95,7 +110,7 @@ async def generate_mood_playlist(
         
         print(f"✅ Found {len(recommendations)} candidate tracks from Last.fm")
         
-        # Filter and analyze
+        # Filter and analyze with multi-mood support
         filtered_tracks = []
         
         for track in recommendations:
@@ -112,7 +127,7 @@ async def generate_mood_playlist(
                     track['artist']
                 )
                 
-                # Predict mood
+                # Predict mood with multi-tag support
                 mood_data = await model_service.predict_mood_from_features(
                     features,
                     lyrics_sentiment,
@@ -120,9 +135,13 @@ async def generate_mood_playlist(
                     genre=None
                 )
                 
-                # Check if matches target BASE mood
-                if mood_data['fused_mood'] == base_mood:
-                    track['predicted_mood'] = mood_data['fused_mood']
+                # Check if any of the predicted moods match target extended mood
+                all_moods = mood_data.get('all_moods', [mood_data.get('primary_mood')])
+                
+                if extended_mood in all_moods:
+                    track['primary_mood'] = mood_data['primary_mood']
+                    track['all_moods'] = all_moods
+                    track['mood_scores'] = mood_data.get('mood_scores', {})
                     track['confidence'] = mood_data['confidence']
                     track['mood_details'] = mood_data
                     filtered_tracks.append(track)
@@ -134,22 +153,60 @@ async def generate_mood_playlist(
                 print(f"⚠️ Error processing track: {e}")
                 continue
         
+        # If no exact matches, filter by similarity
         if not filtered_tracks:
-            print("⚠️ No exact mood matches, returning closest matches")
+            print("⚠️ No exact mood matches, using similarity threshold")
+            for track in recommendations:
+                try:
+                    features = track.get('features')
+                    if not features:
+                        continue
+                    
+                    # Calculate similarity to target mood
+                    similarity = model_service.calculate_mood_similarity(
+                        features, 
+                        extended_mood
+                    )
+                    
+                    if similarity >= 0.60:  # 60% similarity threshold
+                        lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
+                            track['name'],
+                            track['artist']
+                        )
+                        
+                        mood_data = await model_service.predict_mood_from_features(
+                            features,
+                            lyrics_sentiment,
+                            user_id=request.user_id,
+                            genre=None
+                        )
+                        
+                        track['primary_mood'] = mood_data['primary_mood']
+                        track['all_moods'] = mood_data.get('all_moods', [])
+                        track['mood_scores'] = mood_data.get('mood_scores', {})
+                        track['confidence'] = similarity
+                        track['mood_details'] = mood_data
+                        filtered_tracks.append(track)
+                    
+                    if len(filtered_tracks) >= request.limit:
+                        break
+                except Exception as e:
+                    print(f"⚠️ Error in similarity check: {e}")
+                    continue
+        
+        if not filtered_tracks:
+            print("⚠️ No matches found, returning top candidates")
             filtered_tracks = recommendations[:request.limit]
         
-        print(f"✅ Filtered to {len(filtered_tracks)} tracks matching {base_mood}")
+        print(f"✅ Filtered to {len(filtered_tracks)} tracks matching {extended_mood}")
+        
+        # Calculate mood distribution
+        mood_distribution = model_service.calculate_playlist_mood_distribution(filtered_tracks)
         
         # Optimize flow if we have enough tracks
         if len(filtered_tracks) > 2:
-            mood_profiles = {
-                "Happy": {"valence": 0.8, "energy": 0.7, "danceability": 0.7},
-                "Sad": {"valence": 0.2, "energy": 0.3, "danceability": 0.3},
-                "Calm": {"valence": 0.5, "energy": 0.3, "danceability": 0.4},
-                "Energetic": {"valence": 0.7, "energy": 0.9, "danceability": 0.8}
-            }
-            
-            target_profile = mood_profiles[base_mood]
+            # Use the extended mood profile for optimization
+            target_profile = model_service.EXTENDED_MOODS[extended_mood]["profile"]
             
             optimization = model_service.optimize_flow_dp(
                 filtered_tracks,
@@ -165,18 +222,20 @@ async def generate_mood_playlist(
         
         return {
             "requested_mood": request.target_mood,
-            "target_mood": base_mood,
-            "mood_mapped": request.target_mood.lower() != base_mood.lower(),
+            "target_mood": extended_mood,
+            "mood_mapped": request.target_mood.lower() != extended_mood.lower(),
             "tracks": ordered_tracks,
             "total": len(ordered_tracks),
             "flow_score": flow_score,
+            "mood_distribution": mood_distribution,
             "seed_track": {
                 "name": seed_track_name,
                 "artist": seed_artist_name,
                 "id": request.seed_track_id
             },
             "source": "lastfm_recommendations",
-            "approach": "hybrid"
+            "approach": "hybrid_multi_mood",
+            "mood_system": "12_extended_moods"
         }
         
     except HTTPException:
@@ -194,55 +253,76 @@ async def generate_activity_playlist(
     authorization: str = Header(None)
 ):
     """
-    Generate playlist for specific activity (HYBRID APPROACH)
+    Generate playlist for specific activity (12 Moods Compatible)
     """
     try:
         print(f"🏃 Generating playlist for activity: {request.activity}")
         
+        # Updated activity profiles with extended moods
         activity_profiles = {
             "study": {
-                "mood": "Calm",
+                "mood": "Focused",
                 "seed": ("Clair de Lune", "Claude Debussy")
             },
             "workout": {
-                "mood": "Energetic",
+                "mood": "Motivated",
                 "seed": ("Stronger", "Kanye West")
             },
             "gym": {
-                "mood": "Energetic",
-                "seed": ("Stronger", "Kanye West")
+                "mood": "Motivated",
+                "seed": ("Eye of the Tiger", "Survivor")
             },
             "party": {
-                "mood": "Happy",
+                "mood": "Party",
                 "seed": ("Uptown Funk", "Mark Ronson")
             },
             "sleep": {
-                "mood": "Calm",
+                "mood": "Relaxed",
                 "seed": ("Weightless", "Marconi Union")
             },
             "meditation": {
-                "mood": "Calm",
+                "mood": "Ambient",
                 "seed": ("Om Mani Padme Hum", "Imee Ooi")
             },
             "work": {
-                "mood": "Calm",
+                "mood": "Focused",
                 "seed": ("Lofi Hip Hop", "Various Artists")
             },
             "focus": {
-                "mood": "Calm",
-                "seed": ("Clair de Lune", "Claude Debussy")
+                "mood": "Focused",
+                "seed": ("Concentration", "Various Artists")
             },
             "driving": {
-                "mood": "Energetic",
+                "mood": "Excited",
                 "seed": ("Life is a Highway", "Tom Cochrane")
             },
             "relax": {
-                "mood": "Calm",
+                "mood": "Relaxed",
                 "seed": ("Weightless", "Marconi Union")
             },
             "chill": {
-                "mood": "Calm",
-                "seed": ("Weightless", "Marconi Union")
+                "mood": "Chill",
+                "seed": ("Electric Feel", "MGMT")
+            },
+            "romantic": {
+                "mood": "Romantic",
+                "seed": ("Thinking Out Loud", "Ed Sheeran")
+            },
+            "angry": {
+                "mood": "Angry",
+                "seed": ("Break Stuff", "Limp Bizkit")
+            },
+            "sad": {
+                "mood": "Melancholic",
+                "seed": ("Someone Like You", "Adele")
+            },
+            "happy": {
+                "mood": "Joyful",
+                "seed": ("Happy", "Pharrell Williams")
+            },
+            "energetic": {
+                "mood": "Excited",
+                "seed": ("Can't Stop the Feeling", "Justin Timberlake")
             }
         }
         
@@ -283,7 +363,7 @@ async def generate_activity_playlist(
 
 
 # ============================================
-# SPOTIFY-BASED GENERATION (HYBRID)
+# SPOTIFY-BASED GENERATION (MULTI-MOOD)
 # ============================================
 
 @router.post("/spotify/from-top-tracks")
@@ -292,12 +372,7 @@ async def generate_from_spotify_top_tracks(
     authorization: str = Header(None)
 ):
     """
-    Generate playlist based on user's Spotify top tracks (HYBRID)
-    
-    Uses:
-    - Spotify API: Get user's top tracks
-    - Last.fm: Get similar tracks for each top track
-    - Multi-API: Audio features and mood prediction
+    Generate playlist based on user's Spotify top tracks (Multi-Mood)
     """
     try:
         if not authorization or not authorization.startswith('Bearer '):
@@ -307,12 +382,12 @@ async def generate_from_spotify_top_tracks(
         user_id = request.get('user_id')
         target_mood_raw = request.get('target_mood')
         limit = request.get('limit', 20)
-        time_range = request.get('time_range', 'medium_term')  # short_term, medium_term, long_term
+        time_range = request.get('time_range', 'medium_term')
         
-        # Map target mood to base mood if provided
+        # Map target mood to extended mood if provided
         target_mood = None
         if target_mood_raw:
-            target_mood = model_service.map_external_mood_to_base(target_mood_raw)
+            target_mood = model_service.map_external_mood_to_extended(target_mood_raw)
             print(f"🎯 Target mood: {target_mood_raw} → {target_mood}")
         
         print(f"🎵 Generating playlist from user's top tracks")
@@ -321,7 +396,7 @@ async def generate_from_spotify_top_tracks(
         top_tracks = await spotify_service.get_user_top_tracks(
             access_token,
             time_range=time_range,
-            limit=5  # Use top 5 as seeds
+            limit=5
         )
         
         if not top_tracks:
@@ -332,7 +407,7 @@ async def generate_from_spotify_top_tracks(
         # Generate recommendations from each top track
         all_recommendations = []
         
-        for top_track in top_tracks[:3]:  # Use top 3 as seeds
+        for top_track in top_tracks[:3]:
             track_name = top_track['name']
             artist_name = top_track['artists'][0]['name']
             
@@ -357,7 +432,7 @@ async def generate_from_spotify_top_tracks(
         
         print(f"✅ Got {len(unique_recommendations)} unique recommendations")
         
-        # Analyze and filter
+        # Analyze with multi-mood support
         analyzed_tracks = []
         
         for track in unique_recommendations:
@@ -377,7 +452,7 @@ async def generate_from_spotify_top_tracks(
                     track['artist']
                 )
                 
-                # Predict mood
+                # Predict mood with multi-tag support
                 mood_data = await model_service.predict_mood_from_features(
                     features,
                     lyrics_sentiment,
@@ -385,11 +460,15 @@ async def generate_from_spotify_top_tracks(
                 )
                 
                 # Filter by target mood if specified
-                if target_mood and mood_data['fused_mood'] != target_mood:
-                    continue
+                if target_mood:
+                    all_moods = mood_data.get('all_moods', [mood_data.get('primary_mood')])
+                    if target_mood not in all_moods:
+                        continue
                 
                 track['features'] = features
-                track['mood'] = mood_data['fused_mood']
+                track['primary_mood'] = mood_data['primary_mood']
+                track['all_moods'] = mood_data.get('all_moods', [])
+                track['mood_scores'] = mood_data.get('mood_scores', {})
                 track['confidence'] = mood_data['confidence']
                 track['mood_details'] = mood_data
                 
@@ -402,6 +481,9 @@ async def generate_from_spotify_top_tracks(
                 print(f"⚠️ Error analyzing track: {e}")
                 continue
         
+        # Calculate mood distribution
+        mood_distribution = model_service.calculate_playlist_mood_distribution(analyzed_tracks)
+        
         return {
             "source": "spotify_top_tracks",
             "top_tracks_used": [
@@ -412,7 +494,9 @@ async def generate_from_spotify_top_tracks(
             "total": len(analyzed_tracks),
             "requested_mood": target_mood_raw,
             "target_mood": target_mood,
-            "approach": "hybrid"
+            "mood_distribution": mood_distribution,
+            "approach": "hybrid_multi_mood",
+            "mood_system": "12_extended_moods"
         }
         
     except HTTPException:
@@ -428,12 +512,7 @@ async def generate_from_recently_played(
     authorization: str = Header(None)
 ):
     """
-    Generate playlist based on recently played tracks (HYBRID)
-    
-    Uses:
-    - Spotify API: Get recently played tracks
-    - Last.fm: Get similar tracks
-    - Multi-API: Audio features and mood prediction
+    Generate playlist based on recently played tracks (Multi-Mood)
     """
     try:
         if not authorization or not authorization.startswith('Bearer '):
@@ -444,10 +523,10 @@ async def generate_from_recently_played(
         target_mood_raw = request.get('target_mood')
         limit = request.get('limit', 20)
         
-        # Map target mood
+        # Map target mood to extended mood
         target_mood = None
         if target_mood_raw:
-            target_mood = model_service.map_external_mood_to_base(target_mood_raw)
+            target_mood = model_service.map_external_mood_to_extended(target_mood_raw)
         
         print(f"⏮️ Generating playlist from recently played tracks")
         
@@ -480,7 +559,7 @@ async def generate_from_recently_played(
         if not recommendations:
             raise HTTPException(status_code=404, detail="No recommendations found")
         
-        # Analyze and filter
+        # Analyze with multi-mood support
         analyzed_tracks = []
         
         for track in recommendations:
@@ -500,10 +579,15 @@ async def generate_from_recently_played(
                     user_id=user_id
                 )
                 
-                if target_mood and mood_data['fused_mood'] != target_mood:
-                    continue
+                # Filter by target mood if specified
+                if target_mood:
+                    all_moods = mood_data.get('all_moods', [mood_data.get('primary_mood')])
+                    if target_mood not in all_moods:
+                        continue
                 
-                track['mood'] = mood_data['fused_mood']
+                track['primary_mood'] = mood_data['primary_mood']
+                track['all_moods'] = mood_data.get('all_moods', [])
+                track['mood_scores'] = mood_data.get('mood_scores', {})
                 track['confidence'] = mood_data['confidence']
                 track['mood_details'] = mood_data
                 
@@ -516,6 +600,9 @@ async def generate_from_recently_played(
                 print(f"⚠️ Error analyzing track: {e}")
                 continue
         
+        # Calculate mood distribution
+        mood_distribution = model_service.calculate_playlist_mood_distribution(analyzed_tracks)
+        
         return {
             "source": "recently_played",
             "seed_track": {
@@ -527,7 +614,9 @@ async def generate_from_recently_played(
             "total": len(analyzed_tracks),
             "requested_mood": target_mood_raw,
             "target_mood": target_mood,
-            "approach": "hybrid"
+            "mood_distribution": mood_distribution,
+            "approach": "hybrid_multi_mood",
+            "mood_system": "12_extended_moods"
         }
         
     except HTTPException:
@@ -538,15 +627,13 @@ async def generate_from_recently_played(
 
 
 # ============================================
-# DISCOVERY ENDPOINTS
+# DISCOVERY ENDPOINTS (MULTI-MOOD)
 # ============================================
 
 @router.post("/discover")
 async def discover_tracks(request: Dict[str, Any]):
     """
-    Discover new tracks based on artist (Multi-API)
-    
-    Uses Last.fm similar artists to find new music
+    Discover new tracks based on artist (Multi-Mood Compatible)
     """
     try:
         artist_name = request.get('artist_name')
@@ -592,7 +679,9 @@ async def discover_tracks(request: Dict[str, Any]):
                         )
                         
                         track['features'] = features
-                        track['mood'] = mood_data['fused_mood']
+                        track['primary_mood'] = mood_data['primary_mood']
+                        track['all_moods'] = mood_data.get('all_moods', [])
+                        track['mood_scores'] = mood_data.get('mood_scores', {})
                         track['confidence'] = mood_data['confidence']
                         track['similar_to_artist'] = artist_name
                         track['match_score'] = artist['match_score']
@@ -608,11 +697,16 @@ async def discover_tracks(request: Dict[str, Any]):
         
         discovered_tracks.sort(key=lambda x: x.get('match_score', 0), reverse=True)
         
+        # Calculate mood distribution
+        mood_distribution = model_service.calculate_playlist_mood_distribution(discovered_tracks[:limit])
+        
         return {
             "seed_artist": artist_name,
             "discovered_tracks": discovered_tracks[:limit],
             "total": len(discovered_tracks),
-            "similar_artists_explored": len(similar_artists)
+            "similar_artists_explored": len(similar_artists),
+            "mood_distribution": mood_distribution,
+            "mood_system": "12_extended_moods"
         }
         
     except HTTPException:
@@ -628,7 +722,7 @@ async def generate_personalized_playlist(
     authorization: str = Header(None)
 ):
     """
-    Generate highly personalized playlist using user's feedback history
+    Generate highly personalized playlist using user's feedback history (Multi-Mood)
     """
     try:
         user_id = request.get('user_id')
@@ -650,11 +744,23 @@ async def generate_personalized_playlist(
                 "min_required": 5
             }
         
+        # Get favorite mood from user corrections (now supports 12 moods)
         mood_corrections = user_stats.get('mood_corrections', {})
         if mood_corrections:
             favorite_mood = max(mood_corrections, key=mood_corrections.get)
         else:
-            favorite_mood = "Happy"
+            favorite_mood = "Relaxed"  # Default extended mood
+        
+        # Map to extended mood if it's a base mood
+        if favorite_mood in model_service.BASE_MOOD_CLASSES:
+            # Convert base mood to extended mood
+            base_to_extended = {
+                "Happy": "Joyful",
+                "Sad": "Melancholic",
+                "Calm": "Relaxed",
+                "Energetic": "Motivated"
+            }
+            favorite_mood = base_to_extended.get(favorite_mood, "Relaxed")
         
         print(f"📊 User's favorite mood: {favorite_mood}")
         
@@ -688,23 +794,41 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "playlist_generation",
-        "approach": "hybrid",
+        "approach": "hybrid_multi_mood",
+        "mood_system": {
+            "total_moods": 12,
+            "extended_moods": model_service.ALL_MOOD_LABELS,
+            "base_moods": model_service.BASE_MOOD_CLASSES,
+            "multi_tag_support": True,
+            "tags_per_track": "2-3",
+            "similarity_threshold": "70%"
+        },
         "features": [
+            "12 Extended Moods (Relaxed, Focused, Romantic, Excited, Angry, Chill, Melancholic, Dreamy, Motivated, Joyful, Ambient, Party)",
+            "Multi-Tag Classification (2-3 moods per track)",
             "Mood-based generation (Last.fm)",
-            "Activity-based generation",
+            "Activity-based generation (16 activities)",
             "Discovery engine (Last.fm similar artists)",
             "Personalized playlists (user feedback)",
             "Spotify top tracks integration",
             "Spotify recently played integration",
             "Flow optimization (Dynamic Programming)",
-            "External mood mapping (ANY mood → 4 base moods)"
+            "External mood mapping (ANY mood → 12 extended moods)",
+            "Mood distribution analytics",
+            "Feature-based similarity matching"
         ],
-        "supported_base_moods": model_service.MOOD_CLASSES,
+        "supported_extended_moods": model_service.ALL_MOOD_LABELS,
+        "supported_base_moods": model_service.BASE_MOOD_CLASSES,
         "mood_mapping_enabled": True,
         "data_sources": {
             "recommendations": "Last.fm",
             "user_data": "Spotify API",
-            "audio_features": "AcousticBrainz + MusicBrainz",
-            "mood_prediction": "ML Model + Lyrics"
-        }
+            "audio_features": "Spotify API + AcousticBrainz + MusicBrainz",
+            "mood_prediction": "ONNX ML Model + Feature Similarity + Lyrics"
+        },
+        "supported_activities": [
+            "study", "workout", "gym", "party", "sleep", "meditation",
+            "work", "focus", "driving", "relax", "chill", "romantic",
+            "angry", "sad", "happy", "energetic"
+        ]
     }

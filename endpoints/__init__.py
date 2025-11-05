@@ -14,11 +14,13 @@ from .optimize_router import router as optimize_router
 from .train_router import router as train_router
 from .analytics_router import router as analytics_router
 from .generate_router import router as generate_router
+from .live_listening_router import router as live_listening_router
 
 __all__ = [
     "mood_router",
     "optimize_router", 
     "train_router",
     "analytics_router",
-    "generate_router"
+    "generate_router",
+    "live_listening_router"
 ]

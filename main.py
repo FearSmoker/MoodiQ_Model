@@ -19,9 +19,10 @@ from endpoints.optimize_router import router as optimize_router
 from endpoints.train_router import router as train_router
 from endpoints.generate_router import router as generate_router
 from endpoints.analytics_router import router as analytics_router
+from endpoints.live_listening_router import router as live_listening_router
 
 # Import services
-from services import cache_service, model_service, nlp_service, music_service, spotify_service
+from services import cache_service, model_service, nlp_service, music_service, spotify_service, db_recommendation_service
 
 # Import Spotify custom exceptions
 from services.spotify_service import (
@@ -141,6 +142,13 @@ async def startup_event():
         print(f"⚠️ Redis connection failed: {e}")
         print("   Service will run without caching")
     
+    await db_recommendation_service.initialize()
+    
+    app.include_router(
+    live_listening_router,
+    prefix="/live",
+    tags=["Live Listening"]
+)
     # Load ML model
     try:
         model_service.load_model()

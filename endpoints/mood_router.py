@@ -1,11 +1,8 @@
 """
-Updated Mood Prediction Router - COMPLETE INTEGRATION
-- All modifications from code 2 preserved
-- Additional features from code 1 included
-- Better error handling
-- Detailed logging for debugging
-- Proper mood mapping
-- Genre detection improvements
+Updated Mood Prediction Router - Multi-Mood Support (12 Moods + 2-3 Tags)
+- Handles responses with primary_mood and all_moods
+- Compatible with 12 extended moods
+- Maintains backward compatibility with 4 base moods
 """
 
 from fastapi import APIRouter, HTTPException, Header
@@ -46,10 +43,10 @@ class SpotifyTrackMoodRequest(BaseModel):
 
 
 class TrackMoodResponse(BaseModel):
-    """Response model for track mood"""
+    """Response model for track mood - NOW WITH MULTI-MOOD SUPPORT"""
     track_name: str
     artist_name: str
-    mood: Dict[str, Any]
+    mood: Dict[str, Any]  # Contains primary_mood, all_moods, mood_scores
     features: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
 
@@ -68,9 +65,9 @@ class SpotifyPlaylistMoodRequest(BaseModel):
 
 
 class PlaylistMoodResponse(BaseModel):
-    """Response model for playlist mood"""
+    """Response model for playlist mood - UPDATED FOR 12 MOODS"""
     tracks: List[Dict[str, Any]]
-    moodDistribution: Dict[str, float]
+    moodDistribution: Dict[str, float]  # Now includes all 12 moods
     overallMood: str
 
 
@@ -101,10 +98,42 @@ def handle_spotify_error(e: Exception) -> None:
         raise HTTPException(status_code=500, detail=f"Spotify service error: {str(e)}")
 
 
+def format_mood_response(mood_data: Dict) -> Dict:
+    """
+    Format mood data for backward compatibility
+    Ensures both old (single mood) and new (multi-mood) formats work
+    """
+    # Extract primary mood (for backward compatibility)
+    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Relaxed')
+    
+    # Get all moods (new format)
+    all_moods = mood_data.get('all_moods', [primary_mood])
+    
+    # Get mood scores
+    mood_scores = mood_data.get('mood_scores', {primary_mood: mood_data.get('confidence', 0.5)})
+    
+    # Build response
+    return {
+        'primary_mood': primary_mood,
+        'all_moods': all_moods,
+        'mood_scores': mood_scores,
+        'confidence': mood_data.get('confidence', 0.5),
+        'base_mood': mood_data.get('base_mood', primary_mood),
+        'lyrics_mood': mood_data.get('lyrics_mood', 'Neutral'),
+        'source': mood_data.get('source', 'ml_model_multi_tag'),
+        'scores': mood_data.get('scores', {}),
+        'num_tags': len(all_moods),
+        
+        # Backward compatibility fields
+        'fused_mood': primary_mood,  # Old API compatibility
+        'audio_mood': mood_data.get('audio_mood', mood_data.get('base_mood', primary_mood)),
+    }
+
+
 # Original Multi-API endpoints
 @router.post("/track", response_model=TrackMoodResponse)
 async def get_track_mood(request: TrackMoodRequest):
-    """Analyze mood for a single track using multi-API approach"""
+    """Analyze mood for a single track using multi-API approach - NOW WITH MULTI-MOOD TAGS"""
     cache_key = f"track:mood:{request.track_name}:{request.artist_name}:{request.user_id or 'global'}"
     
     try:
@@ -159,8 +188,8 @@ async def get_track_mood(request: TrackMoodRequest):
         print(f"   Polarity: {lyrics_sentiment.get('polarity', 0):.2f}")
         print(f"   Subjectivity: {lyrics_sentiment.get('subjectivity', 0):.2f}")
         
-        # Predict mood
-        print("\nStep 4: Predicting mood...")
+        # Predict mood (now returns multi-mood tags)
+        print("\nStep 4: Predicting mood(s)...")
         mood_data = await model_service.predict_mood_from_features(
             audio_features,
             lyrics_sentiment,
@@ -169,17 +198,20 @@ async def get_track_mood(request: TrackMoodRequest):
             genre=genre
         )
         
+        # Format response
+        formatted_mood = format_mood_response(mood_data)
+        
         print(f"\n✅ FINAL RESULT:")
-        print(f"   Audio Mood: {mood_data['audio_mood']}")
-        print(f"   Lyrics Mood: {mood_data['lyrics_mood']}")
-        print(f"   Fused Mood: {mood_data['fused_mood']} ⭐")
-        print(f"   Confidence: {mood_data['confidence']:.2%}")
+        print(f"   Primary Mood: {formatted_mood['primary_mood']} ⭐")
+        print(f"   All Moods: {', '.join(formatted_mood['all_moods'])}")
+        print(f"   Confidence: {formatted_mood['confidence']:.2%}")
+        print(f"   Tags: {formatted_mood['num_tags']}")
         print(f"{'='*60}\n")
         
         result = {
             "track_name": request.track_name,
             "artist_name": request.artist_name,
-            "mood": mood_data,
+            "mood": formatted_mood,
             "features": audio_features,
             "tags": tags[:10]
         }
@@ -197,7 +229,7 @@ async def get_track_mood(request: TrackMoodRequest):
 
 @router.post("/playlist", response_model=PlaylistMoodResponse)
 async def get_playlist_mood(request: PlaylistMoodRequest):
-    """Analyze mood for entire playlist"""
+    """Analyze mood for entire playlist - NOW WITH 12-MOOD DISTRIBUTION"""
     try:
         print(f"\n{'='*60}")
         print(f"🎵 ANALYZING PLAYLIST: {len(request.tracks)} tracks")
@@ -245,6 +277,9 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                         genre=genre
                     )
                     
+                    # Format mood data
+                    mood_data = format_mood_response(mood_data)
+                    
                     track_cache = {
                         "track_name": track_name,
                         "artist_name": artist_name,
@@ -254,13 +289,19 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                     }
                     await cache_service.set_in_cache(cache_key, track_cache, expiration=3600)
                 
-                print(f"   ✅ Mood: {mood_data.get('fused_mood', 'Unknown')}")
+                primary_mood = mood_data.get('primary_mood', mood_data.get('fused_mood', 'Relaxed'))
+                all_moods = mood_data.get('all_moods', [primary_mood])
+                
+                print(f"   ✅ Moods: {', '.join(all_moods)}")
                 
                 processed_tracks.append({
                     "name": track_name,
                     "artist": artist_name,
                     "features": audio_features,
-                    "mood": mood_data.get('fused_mood', 'Unknown'),
+                    "mood": primary_mood,  # For backward compatibility
+                    "primary_mood": primary_mood,
+                    "all_moods": all_moods,
+                    "mood_scores": mood_data.get('mood_scores', {}),
                     "moodScore": mood_data.get('confidence', 0),
                     "moodDetails": mood_data,
                     "tags": tags[:5]
@@ -273,11 +314,13 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
         if not processed_tracks:
             raise HTTPException(status_code=500, detail="Failed to process any tracks")
         
+        # Calculate playlist mood distribution (now handles 12 moods)
         mood_stats = model_service.calculate_playlist_mood_distribution(processed_tracks)
         
         print(f"\n✅ PLAYLIST ANALYSIS COMPLETE:")
         print(f"   Processed: {len(processed_tracks)} tracks")
         print(f"   Overall Mood: {mood_stats.get('overall_mood', 'Mixed')}")
+        print(f"   Mood Diversity: {mood_stats.get('mood_diversity', 0)} different moods")
         print(f"   Distribution: {mood_stats.get('distribution', {})}")
         print(f"{'='*60}\n")
         
@@ -303,7 +346,7 @@ async def get_spotify_track_mood(
     request: SpotifyTrackMoodRequest,
     authorization: str = Header(None)
 ):
-    """Analyze mood for a Spotify track"""
+    """Analyze mood for a Spotify track - NOW WITH MULTI-MOOD TAGS"""
     try:
         access_token = extract_access_token(authorization)
         
@@ -311,38 +354,28 @@ async def get_spotify_track_mood(
         print(f"🎵 ANALYZING SPOTIFY TRACK: {request.track_id}")
         print(f"{'='*60}\n")
         
-        # Get track info from Spotify
-        print("Step 1: Getting track info from Spotify...")
-        track_info = await spotify_service.get_track_info(request.track_id, access_token)
-        
-        if not track_info:
-            raise HTTPException(status_code=404, detail="Track not found on Spotify")
-        
-        track_name = track_info['name']
-        artist_name = spotify_service.get_primary_artist_name(track_info)
-        
-        print(f"✅ Track: {track_name} by {artist_name}")
-        
-        # Get lyrics sentiment
-        print("\nStep 2: Analyzing lyrics...")
-        lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
-        print(f"✅ Lyrics: Polarity={lyrics_sentiment.get('polarity', 0):.2f}")
-        
-        # Predict mood using hybrid approach
-        print("\nStep 3: Predicting mood...")
+        # Use the updated predict_mood_from_spotify_track
         mood_data = await model_service.predict_mood_from_spotify_track(
             track_id=request.track_id,
             access_token=access_token,
-            lyrics_sentiment=lyrics_sentiment,
+            lyrics_sentiment={"polarity": 0.0, "subjectivity": 0.0},  # Will be fetched internally
             user_id=request.user_id
         )
         
+        # Format response
+        formatted_mood = format_mood_response(mood_data)
+        
+        # Add track info if available
+        if 'track_info' in mood_data:
+            formatted_mood['track_info'] = mood_data['track_info']
+        
         print(f"\n✅ FINAL RESULT:")
-        print(f"   Fused Mood: {mood_data.get('fused_mood')} ⭐")
-        print(f"   Confidence: {mood_data.get('confidence', 0):.2%}")
+        print(f"   Primary Mood: {formatted_mood['primary_mood']} ⭐")
+        print(f"   All Moods: {', '.join(formatted_mood['all_moods'])}")
+        print(f"   Confidence: {formatted_mood['confidence']:.2%}")
         print(f"{'='*60}\n")
         
-        return mood_data
+        return formatted_mood
         
     except (SpotifyAuthError, SpotifyRateLimitError, SpotifyNotFoundError, SpotifyServiceError) as e:
         handle_spotify_error(e)
@@ -359,7 +392,7 @@ async def get_currently_playing_mood(
     authorization: str = Header(None),
     user_id: Optional[str] = None
 ):
-    """Analyze mood of currently playing track"""
+    """Analyze mood of currently playing track - WITH MULTI-MOOD SUPPORT"""
     try:
         access_token = extract_access_token(authorization)
         
@@ -432,8 +465,8 @@ async def get_currently_playing_mood(
             print(f"⚠️ Genre error: {e}")
             genre = None
         
-        # Predict mood
-        print("\nStep 5: Predicting mood...")
+        # Predict mood (multi-mood)
+        print("\nStep 5: Predicting mood(s)...")
         try:
             mood_data = await model_service.predict_mood_from_features(
                 audio_features,
@@ -443,20 +476,21 @@ async def get_currently_playing_mood(
                 genre=genre
             )
             
+            formatted_mood = format_mood_response(mood_data)
+            
             print(f"\n✅ MOOD PREDICTED:")
-            print(f"   Audio Mood: {mood_data['audio_mood']}")
-            print(f"   Lyrics Mood: {mood_data['lyrics_mood']}")
-            print(f"   Fused Mood: {mood_data['fused_mood']} ⭐")
-            print(f"   Confidence: {mood_data['confidence']:.2%}")
+            print(f"   Primary Mood: {formatted_mood['primary_mood']} ⭐")
+            print(f"   All Moods: {', '.join(formatted_mood['all_moods'])}")
+            print(f"   Confidence: {formatted_mood['confidence']:.2%}")
             
         except Exception as e:
             print(f"⚠️ Mood prediction error: {e}")
             traceback.print_exc()
             
-            mood_data = {
-                'audio_mood': 'Unknown',
-                'lyrics_mood': 'Neutral',
-                'fused_mood': 'Unknown',
+            formatted_mood = {
+                'primary_mood': 'Unknown',
+                'all_moods': ['Unknown'],
+                'mood_scores': {'Unknown': 0.0},
                 'confidence': 0.0,
                 'source': 'fallback',
                 'scores': {
@@ -497,14 +531,7 @@ async def get_currently_playing_mood(
             'repeat_state': playback_data['repeat_state'],
             'context': playback_data.get('context'),
             
-            'mood_analysis': {
-                'fused_mood': mood_data['fused_mood'],
-                'audio_mood': mood_data['audio_mood'],
-                'lyrics_mood': mood_data['lyrics_mood'],
-                'confidence': mood_data['confidence'],
-                'source': mood_data['source'],
-                'scores': mood_data['scores']
-            },
+            'mood_analysis': formatted_mood,
             
             'audio_features': {
                 'valence': audio_features.get('valence', 0.5),
@@ -539,7 +566,7 @@ async def get_spotify_playlist_mood(
     request: SpotifyPlaylistMoodRequest,
     authorization: str = Header(None)
 ):
-    """Analyze mood for entire Spotify playlist"""
+    """Analyze mood for entire Spotify playlist - WITH 12-MOOD DISTRIBUTION"""
     try:
         access_token = extract_access_token(authorization)
         
@@ -596,9 +623,14 @@ async def get_spotify_playlist_mood(
                         user_id=request.user_id
                     )
                     
+                    mood_data = format_mood_response(mood_data)
+                    
                     await cache_service.set_in_cache(cache_key, mood_data, expiration=3600)
                 
-                print(f"   ✅ Mood: {mood_data.get('fused_mood', 'Unknown')}")
+                primary_mood = mood_data.get('primary_mood', 'Relaxed')
+                all_moods = mood_data.get('all_moods', [primary_mood])
+                
+                print(f"   ✅ Moods: {', '.join(all_moods)}")
                 
                 processed_tracks.append({
                     "id": track_id,
@@ -610,7 +642,10 @@ async def get_spotify_playlist_mood(
                     "external_url": track.get('external_url'),
                     "images": track['album'].get('images', []),
                     "added_at": track.get('added_at'),
-                    "mood": mood_data.get('fused_mood', 'Unknown'),
+                    "mood": primary_mood,  # Backward compatibility
+                    "primary_mood": primary_mood,
+                    "all_moods": all_moods,
+                    "mood_scores": mood_data.get('mood_scores', {}),
                     "moodScore": mood_data.get('confidence', 0),
                     "moodDetails": mood_data,
                     "features": mood_data.get('track_info', {})
@@ -627,6 +662,7 @@ async def get_spotify_playlist_mood(
                 detail=f"Failed to process any tracks. {skipped_tracks} tracks were skipped."
             )
         
+        # Calculate playlist mood distribution (12 moods)
         mood_stats = model_service.calculate_playlist_mood_distribution(processed_tracks)
         
         print(f"\n✅ PLAYLIST ANALYSIS COMPLETE:")
@@ -634,6 +670,7 @@ async def get_spotify_playlist_mood(
         print(f"   Processed: {len(processed_tracks)}")
         print(f"   Skipped: {skipped_tracks}")
         print(f"   Overall Mood: {mood_stats.get('overall_mood', 'Mixed')}")
+        print(f"   Mood Diversity: {mood_stats.get('mood_diversity', 0)} moods")
         print(f"   Distribution: {mood_stats.get('distribution', {})}")
         print(f"{'='*60}\n")
         
@@ -659,8 +696,7 @@ async def get_spotify_playlist_mood(
         print(f"❌ Spotify playlist mood analysis failed: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-
+    
 @router.get("/spotify/playlists")
 async def get_user_playlists(
     authorization: str = Header(None),
@@ -689,12 +725,12 @@ async def get_user_playlists(
 
 
 # ============================================
-# UTILITY ENDPOINTS (from code 1)
+# UTILITY ENDPOINTS
 # ============================================
 
 @router.post("/search-and-analyze")
 async def search_and_analyze(request: Dict[str, Any]):
-    """Search for a track and analyze its mood (Multi-API)"""
+    """Search for a track and analyze its mood (Multi-API) - WITH MULTI-MOOD SUPPORT"""
     try:
         query = request.get('query')
         user_id = request.get('user_id')
@@ -733,7 +769,7 @@ async def search_and_analyze(request: Dict[str, Any]):
 
 @router.post("/batch-analyze")
 async def batch_analyze_tracks(request: Dict[str, Any]):
-    """Batch analyze multiple tracks efficiently"""
+    """Batch analyze multiple tracks efficiently - WITH MULTI-MOOD SUPPORT"""
     try:
         tracks = request.get('tracks', [])
         user_id = request.get('user_id')
@@ -761,10 +797,9 @@ async def batch_analyze_tracks(request: Dict[str, Any]):
         print(f"❌ Batch analyze error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - UPDATED FOR 12 MOODS"""
     model_loaded = model_service.mood_model is not None
     cache_connected = cache_service.is_connected()
     ytmusic_available = music_service.ytmusic is not None
@@ -782,13 +817,22 @@ async def health_check():
     except Exception as e:
         spotify_status = f"error: {str(e)}"
     
+    # Get mood system info
+    base_moods = model_service.BASE_MOOD_CLASSES
+    extended_moods = model_service.ALL_MOOD_LABELS
+    
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ml_model": {
                 "loaded": model_loaded,
-                "mood_classes": model_service.MOOD_CLASSES if hasattr(model_service, 'MOOD_CLASSES') else [],
+                "base_mood_classes": base_moods,
+                "extended_mood_classes": extended_moods,
+                "total_moods": len(extended_moods),
+                "multi_tag_support": True,
+                "max_tags_per_track": 3,
+                "similarity_threshold": 0.70,
                 "status": "active" if model_loaded else "fallback"
             },
             "cache": {
@@ -804,7 +848,8 @@ async def health_check():
                     "rate_limiting",
                     "custom_exceptions",
                     "token_validation",
-                    "podcast_support"
+                    "podcast_support",
+                    "multi_mood_analysis"
                 ]
             },
             "ytmusic": {
@@ -841,6 +886,11 @@ async def health_check():
             "mood_analysis": {
                 "hybrid_approach": True,
                 "ml_model": model_loaded,
+                "base_moods": len(base_moods),
+                "extended_moods": len(extended_moods),
+                "multi_tag_classification": True,
+                "tags_per_track": "2-3",
+                "similarity_threshold": "70%",
                 "lyrics_sentiment": True,
                 "audio_features": True,
                 "genre_adaptive": True
@@ -851,6 +901,12 @@ async def health_check():
                 "token_expiration_detection": True,
                 "retry_logic": False
             }
+        },
+        "mood_system": {
+            "base_moods": base_moods,
+            "extended_moods": extended_moods,
+            "mapping_approach": "feature_similarity",
+            "backward_compatible": True
         },
         "required_spotify_scopes": spotify_service.get_required_scopes()
     }
@@ -883,6 +939,11 @@ async def test_spotify_connection(authorization: str = Header(None)):
                 },
                 "available_endpoints": available_endpoints,
                 "required_scopes": spotify_service.get_required_scopes(),
+                "mood_system": {
+                    "multi_mood_support": True,
+                    "extended_moods": model_service.ALL_MOOD_LABELS,
+                    "total_moods": len(model_service.ALL_MOOD_LABELS)
+                },
                 "recommendations": {
                     "missing_scopes": [
                         scope for scope, available in available_endpoints.items()
@@ -973,23 +1034,23 @@ async def clear_spotify_cache(
 
 @router.get("/debug/endpoints")
 async def list_available_endpoints():
-    """List all available API endpoints with descriptions"""
+    """List all available API endpoints with descriptions - UPDATED FOR MULTI-MOOD"""
     return {
         "endpoints": {
             "multi_api": {
-                "POST /mood/track": "Analyze mood using Multi-API (no Spotify account needed)",
-                "POST /mood/playlist": "Analyze playlist mood using Multi-API",
-                "POST /mood/search-and-analyze": "Search and analyze track mood",
-                "POST /mood/batch-analyze": "Batch analyze multiple tracks"
+                "POST /mood/track": "Analyze mood using Multi-API (no Spotify account needed) - Returns 2-3 mood tags",
+                "POST /mood/playlist": "Analyze playlist mood using Multi-API - 12-mood distribution",
+                "POST /mood/search-and-analyze": "Search and analyze track mood - Multi-mood support",
+                "POST /mood/batch-analyze": "Batch analyze multiple tracks - Multi-mood support"
             },
             "spotify_hybrid": {
-                "POST /mood/spotify/track": "Analyze Spotify track mood (requires auth)",
-                "POST /mood/spotify/playlist": "Analyze Spotify playlist mood (requires auth, supports 100+ tracks)",
-                "GET /mood/spotify/currently-playing": "Analyze currently playing track (requires auth)",
+                "POST /mood/spotify/track": "Analyze Spotify track mood (requires auth) - Returns 2-3 mood tags",
+                "POST /mood/spotify/playlist": "Analyze Spotify playlist mood (requires auth, supports 100+ tracks) - 12-mood distribution",
+                "GET /mood/spotify/currently-playing": "Analyze currently playing track (requires auth) - Multi-mood support",
                 "GET /mood/spotify/playlists": "Get user playlists (supports 50+ playlists)"
             },
             "utility": {
-                "GET /mood/health": "Comprehensive health check",
+                "GET /mood/health": "Comprehensive health check - Shows 12-mood system info",
                 "GET /mood/spotify/test-connection": "Test Spotify token validity",
                 "GET /mood/spotify/rate-limit-status": "Check rate limit usage",
                 "POST /mood/spotify/clear-cache": "Clear cache entries",
@@ -1004,9 +1065,59 @@ async def list_available_endpoints():
             "pagination": "All Spotify endpoints support full pagination",
             "rate_limiting": "Built-in rate limiting protection",
             "caching": "Intelligent caching for improved performance",
-            "error_handling": "Comprehensive error handling with custom exceptions"
+            "error_handling": "Comprehensive error handling with custom exceptions",
+            "multi_mood_classification": "2-3 mood tags per track from 12 extended moods",
+            "similarity_threshold": "70% minimum similarity for mood tags"
+        },
+        "mood_system": {
+            "base_moods": model_service.BASE_MOOD_CLASSES,
+            "extended_moods": model_service.ALL_MOOD_LABELS,
+            "total_moods": len(model_service.ALL_MOOD_LABELS),
+            "tags_per_track": "2-3",
+            "similarity_threshold": "70%",
+            "mapping_method": "Feature similarity (Euclidean distance)",
+            "backward_compatible": True
         }
     }
+
+
+@router.get("/moods/list")
+async def list_available_moods():
+    """List all available moods with their profiles and mappings"""
+    try:
+        moods_info = {}
+        
+        for mood_name, mood_data in model_service.EXTENDED_MOODS.items():
+            moods_info[mood_name] = {
+                "base_moods": mood_data["base_moods"],
+                "profile": mood_data["profile"],
+                "key_features": list(mood_data["weights"].keys()),
+                "description": f"Maps from {', '.join(mood_data['base_moods'])}"
+            }
+        
+        return {
+            "base_moods": {
+                "list": model_service.BASE_MOOD_CLASSES,
+                "count": len(model_service.BASE_MOOD_CLASSES),
+                "source": "ML Model (trained)"
+            },
+            "extended_moods": {
+                "list": model_service.ALL_MOOD_LABELS,
+                "count": len(model_service.ALL_MOOD_LABELS),
+                "source": "Algorithmic Mapping"
+            },
+            "mood_details": moods_info,
+            "classification": {
+                "method": "Feature Similarity",
+                "tags_per_track": "2-3",
+                "min_similarity": "70%",
+                "features_used": model_service.MODEL_FEATURE_ORDER
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ Error listing moods: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================

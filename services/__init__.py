@@ -16,6 +16,9 @@ from . import spotify_service
 from . import nlp_service
 from . import music_service
 from . import gemini_service
+from . import playlist_analyzer
+from . import live_queue_service
+from . import db_recommendation_service
 
 __all__ = [
     'cache_service',
@@ -24,5 +27,8 @@ __all__ = [
     'spotify_service',
     'music_service',
     'gemini_service',
-    'nlp_service'
+    'nlp_service',
+    'playlist_analyzer',
+    'live_queue_service',
+    'db_recommendation_service'
 ]

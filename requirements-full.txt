@@ -102,3 +102,8 @@ musicbrainzngs==0.7.1
 # Google Gemini API
 # ------------------------------
 google-genai
+
+# ------------------------------
+# Populating the database
+# ------------------------------
+motor
