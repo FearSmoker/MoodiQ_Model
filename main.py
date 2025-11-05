@@ -1,6 +1,8 @@
 """
 Updated Moodify-AI ML Service - Hybrid Approach
 Uses: Spotify API (OAuth) + YTMusicAPI + MusicBrainz + AcousticBrainz + Last.fm
+
+UPDATED: Added proper exception handlers for new Spotify service
 """
 
 from fastapi import FastAPI, HTTPException
@@ -21,6 +23,14 @@ from endpoints.analytics_router import router as analytics_router
 # Import services
 from services import cache_service, model_service, nlp_service, music_service, spotify_service
 
+# Import Spotify custom exceptions
+from services.spotify_service import (
+    SpotifyAuthError,
+    SpotifyRateLimitError,
+    SpotifyNotFoundError,
+    SpotifyServiceError
+)
+
 # Load environment variables
 load_dotenv()
 
@@ -28,7 +38,7 @@ load_dotenv()
 app = FastAPI(
     title="Moodify-AI ML Service (Hybrid Edition)",
     description="ML service using Spotify API (OAuth) + Multi-API stack for comprehensive music analysis",
-    version="2.5.0",
+    version="2.5.1",  # Updated version
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -50,12 +60,76 @@ def favicon():
     """Suppress favicon.ico 404 requests"""
     return Response(status_code=204)
 
-# Startup event
+
+# ============================================
+# SPOTIFY EXCEPTION HANDLERS
+# ============================================
+
+@app.exception_handler(SpotifyAuthError)
+async def spotify_auth_error_handler(request, exc):
+    """Global handler for Spotify authentication errors"""
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": "spotify_authentication_failed",
+            "message": str(exc),
+            "action": "Please re-authenticate with Spotify",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+
+@app.exception_handler(SpotifyRateLimitError)
+async def spotify_rate_limit_error_handler(request, exc):
+    """Global handler for Spotify rate limit errors"""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "spotify_rate_limit_exceeded",
+            "message": str(exc),
+            "retry_after": exc.retry_after,
+            "action": f"Please wait {exc.retry_after} seconds before retrying",
+            "timestamp": datetime.utcnow().isoformat()
+        },
+        headers={"Retry-After": str(exc.retry_after)}
+    )
+
+
+@app.exception_handler(SpotifyNotFoundError)
+async def spotify_not_found_error_handler(request, exc):
+    """Global handler for Spotify resource not found errors"""
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "spotify_resource_not_found",
+            "message": str(exc),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+
+@app.exception_handler(SpotifyServiceError)
+async def spotify_service_error_handler(request, exc):
+    """Global handler for general Spotify service errors"""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "spotify_service_error",
+            "message": str(exc),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+
+# ============================================
+# STARTUP & SHUTDOWN EVENTS
+# ============================================
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     print("=" * 80)
-    print("🚀 Starting Moodify-AI ML Service v2.5 (HYBRID Edition)")
+    print("🚀 Starting Moodify-AI ML Service v2.5.1 (HYBRID Edition)")
     print("=" * 80)
     print(f"📅 Startup time: {datetime.utcnow().isoformat()}")
     
@@ -90,6 +164,7 @@ async def startup_event():
             # Test Spotify server credentials
             spotify_service.get_spotify_client()
             print("✅ Spotify service initialized (server credentials)")
+            print("   Features: Full pagination, rate limiting, custom exceptions")
         else:
             print("⚠️ Spotify credentials not configured")
             print("   Service will use user OAuth tokens only")
@@ -101,7 +176,7 @@ async def startup_event():
     print("\n📡 API Configuration Status:")
     print("\n🎵 Primary Data Sources (Spotify OAuth):")
     print(f"   Spotify API: {'✅ Configured' if os.getenv('SPOTIFY_CLIENT_ID') else '⚠️ User tokens only'}")
-    print(f"   - User playlists: ✅ Available")
+    print(f"   - User playlists: ✅ Available (with pagination)")
     print(f"   - Currently playing: ✅ Available")
     print(f"   - Top tracks/artists: ✅ Available")
     print(f"   - Track metadata: ✅ Available")
@@ -117,17 +192,23 @@ async def startup_event():
     print("\n📝 Lyrics & Sentiment:")
     print(f"   Genius API: {'✅ Configured' if os.getenv('GENIUS_API_KEY') else '❌ Not configured'}")
     
+    print("\n🛡️ Error Handling:")
+    print("   ✅ Custom Spotify exceptions")
+    print("   ✅ Rate limit protection")
+    print("   ✅ Token expiration handling")
+    print("   ✅ Graceful degradation")
+    
     print("\n" + "=" * 80)
-    print("✅ Moodify-AI ML Service v2.5 Ready!")
+    print("✅ Moodify-AI ML Service v2.5.1 Ready!")
     print("=" * 80)
     print("\n🎯 HYBRID API Architecture:")
     print("\n   📊 METADATA & USER DATA (Spotify API via OAuth):")
-    print("      • User playlists and saved tracks")
+    print("      • User playlists and saved tracks (with pagination)")
     print("      • Currently playing track")
     print("      • Top tracks and artists")
     print("      • Recently played tracks")
     print("      • Track metadata (name, artist, album, popularity)")
-    print("      • Playlist tracks")
+    print("      • Playlist tracks (supports 100+ tracks)")
     
     print("\n   🎹 AUDIO FEATURES (Multi-API Stack):")
     print("      • MusicBrainz → MBID Lookup")
@@ -165,7 +246,6 @@ async def startup_event():
     print("=" * 80 + "\n")
 
 
-# Shutdown event
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
@@ -180,7 +260,10 @@ async def shutdown_event():
     print("✅ Shutdown complete")
 
 
-# Include routers
+# ============================================
+# INCLUDE ROUTERS
+# ============================================
+
 app.include_router(
     mood_router,
     prefix="/predict",
@@ -212,13 +295,16 @@ app.include_router(
 )
 
 
-# Root endpoint
+# ============================================
+# ROOT & INFO ENDPOINTS
+# ============================================
+
 @app.get("/")
 def read_root():
     """Root endpoint with service information"""
     return {
         "service": "Moodify-AI ML Service",
-        "version": "2.5.0",
+        "version": "2.5.1",
         "approach": "hybrid",
         "status": "running",
         "timestamp": datetime.utcnow().isoformat(),
@@ -232,8 +318,8 @@ def read_root():
         },
         "spotify_integration": {
             "working_endpoints": [
-                "User Playlists (/me/playlists)",
-                "Playlist Tracks (/playlists/{id}/tracks)",
+                "User Playlists (/me/playlists) - ✅ Full pagination",
+                "Playlist Tracks (/playlists/{id}/tracks) - ✅ Full pagination",
                 "Currently Playing (/me/player/currently-playing)",
                 "Top Tracks (/me/top/tracks)",
                 "Top Artists (/me/top/artists)",
@@ -260,12 +346,15 @@ def read_root():
             "✅ Hybrid Spotify + Multi-API Integration",
             "✅ User Authentication via OAuth (handled by backend)",
             "✅ Real-time Currently Playing Analysis",
-            "✅ Playlist Mood Analysis",
+            "✅ Playlist Mood Analysis (100+ tracks supported)",
+            "✅ Full Pagination for Playlists & Tracks",
             "✅ Top Tracks-based Recommendations",
             "✅ Mood Prediction (ML + Lyrics Sentiment)",
             "✅ Audio Feature Extraction",
             "✅ Flow Optimization (Dynamic Programming)",
             "✅ Personalized Learning from Feedback",
+            "✅ Custom Exception Handling",
+            "✅ Rate Limit Protection",
             "✅ Multi-language Support",
             "✅ Real-time Caching"
         ]
@@ -301,13 +390,20 @@ async def health_check():
     health_data = {
         "status": status,
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "2.5.0",
+        "version": "2.5.1",
         "approach": "hybrid",
         "services": {
             "spotify_api": {
                 "status": "configured" if spotify_configured else "not_configured",
                 "available": spotify_configured,
                 "mode": "oauth_only" if not os.getenv('SPOTIFY_CLIENT_SECRET') else "server_and_oauth",
+                "features": [
+                    "full_pagination",
+                    "rate_limiting",
+                    "custom_exceptions",
+                    "token_validation",
+                    "podcast_support"
+                ],
                 "endpoints": {
                     "user_playlists": True,
                     "currently_playing": True,
@@ -362,7 +458,10 @@ async def health_check():
             "lyrics_analysis": bool(os.getenv('GENIUS_API_KEY')),
             "personalization": model_status,
             "caching": redis_status,
-            "flow_optimization": True
+            "flow_optimization": True,
+            "pagination": True,
+            "rate_limiting": True,
+            "error_handling": True
         }
     }
     
@@ -382,7 +481,7 @@ async def get_service_stats():
         
         return {
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "2.5.0",
+            "version": "2.5.1",
             "approach": "hybrid",
             "model_loaded": model_service.mood_model is not None,
             "cache": cache_stats,
@@ -396,7 +495,8 @@ async def get_service_stats():
                 "spotify": {
                     "status": "configured" if os.getenv('SPOTIFY_CLIENT_ID') else "not_configured",
                     "purpose": "User data, playlists, currently playing, metadata",
-                    "auth": "OAuth 2.0 (via backend)"
+                    "auth": "OAuth 2.0 (via backend)",
+                    "features": ["pagination", "rate_limiting", "custom_exceptions"]
                 },
                 "ytmusic": {
                     "status": "active" if music_service.ytmusic else "inactive",
@@ -439,7 +539,7 @@ async def get_service_stats():
 async def get_api_info():
     """Get detailed API integration information"""
     return {
-        "service": "Moodify-AI ML Service v2.5",
+        "service": "Moodify-AI ML Service v2.5.1",
         "approach": "HYBRID",
         "description": "Combines Spotify API (OAuth) with Multi-API stack for comprehensive music analysis",
         
@@ -451,12 +551,14 @@ async def get_api_info():
                     "endpoint": "/me/playlists",
                     "purpose": "Get user's playlists",
                     "status": "✅ Working",
+                    "pagination": "✅ Full support",
                     "scope": "playlist-read-private"
                 },
                 {
                     "endpoint": "/playlists/{id}/tracks",
                     "purpose": "Get playlist tracks",
                     "status": "✅ Working",
+                    "pagination": "✅ Supports 100+ tracks",
                     "scope": "playlist-read-private"
                 },
                 {
@@ -519,7 +621,8 @@ async def get_api_info():
                 "auth": "OAuth 2.0",
                 "purpose": "User data, playlists, metadata",
                 "status": "✅ Primary data source",
-                "rate_limit": "Varies by endpoint"
+                "rate_limit": "Varies by endpoint",
+                "features": ["pagination", "rate_limiting", "error_handling"]
             },
             {
                 "name": "YTMusicAPI",
@@ -571,12 +674,18 @@ async def get_api_info():
             "✅ Lyrics sentiment analysis",
             "✅ Personalized ML-based mood prediction",
             "✅ Real-time caching for performance",
-            "✅ Fallback mechanisms for reliability"
+            "✅ Fallback mechanisms for reliability",
+            "✅ Full pagination support (100+ tracks)",
+            "✅ Custom exception handling",
+            "✅ Rate limit protection"
         ]
     }
 
 
-# NLP Command endpoint
+# ============================================
+# NLP & UTILITY ENDPOINTS
+# ============================================
+
 @app.post("/nlp/command")
 async def process_nlp_command(request: dict):
     """Process natural language commands"""
@@ -606,7 +715,10 @@ async def process_nlp_command(request: dict):
         }
 
 
-# Error handlers
+# ============================================
+# GENERAL ERROR HANDLERS
+# ============================================
+
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
     return JSONResponse(
@@ -631,18 +743,22 @@ async def internal_error_handler(request, exc):
     )
 
 
-# Run the application
+# ============================================
+# RUN APPLICATION
+# ============================================
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")
     
     print("\n" + "=" * 80)
-    print("🚀 Starting Moodify-AI ML Service v2.5 (HYBRID Edition)")
+    print("🚀 Starting Moodify-AI ML Service v2.5.1 (HYBRID Edition)")
     print("=" * 80)
     print(f"📍 Host: {host}")
     print(f"🔌 Port: {port}")
     print(f"📚 Docs: http://{host}:{port}/docs")
     print(f"🔗 Approach: Spotify API (OAuth) + Multi-API Stack")
+    print(f"✨ Features: Pagination, Rate Limiting, Custom Exceptions")
     print("=" * 80 + "\n")
     
     uvicorn.run(
