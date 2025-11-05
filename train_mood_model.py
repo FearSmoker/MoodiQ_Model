@@ -1,5 +1,5 @@
 """
-Moodify-AI Mood Classification Model Training Pipeline
+MoodiQ-AI Mood Classification Model Training Pipeline
 
 This script trains a neural network to classify songs into moods based on 
 Spotify audio features and exports the model to ONNX format.
@@ -419,7 +419,7 @@ def main():
     """
     Main training pipeline.
     """
-    parser = argparse.ArgumentParser(description='Train Moodify-AI mood classification model')
+    parser = argparse.ArgumentParser(description='Train MoodiQ-AI mood classification model')
     parser.add_argument('--dataset', type=str, default='mood_dataset.csv',
                         help='Path to dataset CSV file')
     parser.add_argument('--output', type=str, default='models/mood_model.onnx',
@@ -430,7 +430,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("🎵 Moodify-AI Mood Classification Model Training")
+    print("🎵 MoodiQ-AI Mood Classification Model Training")
     print("=" * 60)
     
     # Load data

@@ -1,13 +1,11 @@
 """
-Updated Mood Prediction Router - Hybrid Approach
-Compatible with Production-Ready Spotify Service
-
-Changes:
-- ✅ Proper exception handling for new Spotify exceptions
-- ✅ Support for full pagination
-- ✅ Rate limit error handling
-- ✅ Token expiration handling
-- ✅ Consistent cache key generation
+Updated Mood Prediction Router - COMPLETE INTEGRATION
+- All modifications from code 2 preserved
+- Additional features from code 1 included
+- Better error handling
+- Detailed logging for debugging
+- Proper mood mapping
+- Genre detection improvements
 """
 
 from fastapi import APIRouter, HTTPException, Header
@@ -28,6 +26,7 @@ from services.spotify_service import (
     SpotifyServiceError
 )
 import traceback
+import os
 
 router = APIRouter()
 
@@ -57,7 +56,7 @@ class TrackMoodResponse(BaseModel):
 
 class PlaylistMoodRequest(BaseModel):
     """Request model for playlist mood analysis"""
-    tracks: List[Dict[str, str]]  # List with 'name' and 'artist' keys
+    tracks: List[Dict[str, str]]
     user_id: Optional[str] = None
 
 
@@ -65,7 +64,7 @@ class SpotifyPlaylistMoodRequest(BaseModel):
     """Request model for Spotify playlist mood analysis"""
     playlist_id: str
     user_id: Optional[str] = None
-    include_unavailable: Optional[bool] = False  # NEW: Handle unavailable tracks
+    include_unavailable: Optional[bool] = False
 
 
 class PlaylistMoodResponse(BaseModel):
@@ -75,17 +74,9 @@ class PlaylistMoodResponse(BaseModel):
     overallMood: str
 
 
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
-
+# Helper functions
 def extract_access_token(authorization: Optional[str]) -> str:
-    """
-    Extract and validate access token from Authorization header
-    
-    Raises:
-        HTTPException: If token is missing or invalid
-    """
+    """Extract and validate access token"""
     if not authorization or not authorization.startswith('Bearer '):
         raise HTTPException(
             status_code=401,
@@ -95,49 +86,25 @@ def extract_access_token(authorization: Optional[str]) -> str:
 
 
 def handle_spotify_error(e: Exception) -> None:
-    """
-    Convert Spotify service exceptions to appropriate HTTP exceptions
-    """
+    """Convert Spotify service exceptions to HTTP exceptions"""
     if isinstance(e, SpotifyAuthError):
-        raise HTTPException(
-            status_code=401,
-            detail=f"Authentication failed: {str(e)}. Please re-authenticate with Spotify."
-        )
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
     elif isinstance(e, SpotifyRateLimitError):
         raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {str(e)}. Retry after {e.retry_after} seconds.",
+            status_code=429, 
+            detail=f"Rate limit exceeded: {str(e)}",
             headers={"Retry-After": str(e.retry_after)}
         )
     elif isinstance(e, SpotifyNotFoundError):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Resource not found: {str(e)}"
-        )
+        raise HTTPException(status_code=404, detail=f"Resource not found: {str(e)}")
     elif isinstance(e, SpotifyServiceError):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Spotify service error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Spotify service error: {str(e)}")
 
 
-# ============================================
-# ORIGINAL ENDPOINTS (Multi-API)
-# ============================================
-
+# Original Multi-API endpoints
 @router.post("/track", response_model=TrackMoodResponse)
 async def get_track_mood(request: TrackMoodRequest):
-    """
-    Analyze mood for a single track using multi-API approach
-    
-    Pipeline:
-    1. Search track on YTMusic
-    2. Get MBID from MusicBrainz
-    3. Fetch audio features from AcousticBrainz
-    4. Get genre tags from Last.fm
-    5. Fetch lyrics sentiment
-    6. Predict mood using ML model
-    """
+    """Analyze mood for a single track using multi-API approach"""
     cache_key = f"track:mood:{request.track_name}:{request.artist_name}:{request.user_id or 'global'}"
     
     try:
@@ -147,9 +114,12 @@ async def get_track_mood(request: TrackMoodRequest):
             print(f"📦 Cache HIT for track mood")
             return cached_result
         
-        print(f"🎵 Analyzing: {request.track_name} by {request.artist_name}")
+        print(f"\n{'='*60}")
+        print(f"🎵 ANALYZING TRACK: {request.track_name} by {request.artist_name}")
+        print(f"{'='*60}\n")
         
-        # 1. Get audio features (MusicBrainz → AcousticBrainz)
+        # Get audio features
+        print("Step 1: Getting audio features...")
         audio_features = await music_service.get_audio_features(
             request.track_name,
             request.artist_name
@@ -158,25 +128,39 @@ async def get_track_mood(request: TrackMoodRequest):
         if not audio_features:
             print("⚠️ Using default audio features")
             audio_features = music_service.get_default_features()
+        else:
+            print(f"✅ Audio features retrieved:")
+            print(f"   Valence: {audio_features.get('valence', 0):.2f}")
+            print(f"   Energy: {audio_features.get('energy', 0):.2f}")
+            print(f"   Danceability: {audio_features.get('danceability', 0):.2f}")
         
-        # 2. Get genre tags from Last.fm
+        # Get genre tags
+        print("\nStep 2: Getting genre tags...")
         tags = await music_service.get_lastfm_tags(
             request.track_name,
             request.artist_name
         )
         
-        # Determine genre from tags
         genre = request.genre
         if not genre and tags:
             genre = tags[0]
         
-        # 3. Get lyrics sentiment
+        print(f"✅ Genre: {genre or 'Unknown'}")
+        print(f"   Tags: {', '.join(tags[:5]) if tags else 'None'}")
+        
+        # Get lyrics sentiment
+        print("\nStep 3: Analyzing lyrics sentiment...")
         lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
             request.track_name,
             request.artist_name
         )
         
-        # 4. Predict mood
+        print(f"✅ Lyrics sentiment:")
+        print(f"   Polarity: {lyrics_sentiment.get('polarity', 0):.2f}")
+        print(f"   Subjectivity: {lyrics_sentiment.get('subjectivity', 0):.2f}")
+        
+        # Predict mood
+        print("\nStep 4: Predicting mood...")
         mood_data = await model_service.predict_mood_from_features(
             audio_features,
             lyrics_sentiment,
@@ -184,6 +168,13 @@ async def get_track_mood(request: TrackMoodRequest):
             track_id=None,
             genre=genre
         )
+        
+        print(f"\n✅ FINAL RESULT:")
+        print(f"   Audio Mood: {mood_data['audio_mood']}")
+        print(f"   Lyrics Mood: {mood_data['lyrics_mood']}")
+        print(f"   Fused Mood: {mood_data['fused_mood']} ⭐")
+        print(f"   Confidence: {mood_data['confidence']:.2%}")
+        print(f"{'='*60}\n")
         
         result = {
             "track_name": request.track_name,
@@ -196,7 +187,6 @@ async def get_track_mood(request: TrackMoodRequest):
         # Cache for 1 hour
         await cache_service.set_in_cache(cache_key, result, expiration=3600)
         
-        print(f"✅ Mood analysis complete: {mood_data['fused_mood']}")
         return result
         
     except Exception as e:
@@ -207,11 +197,11 @@ async def get_track_mood(request: TrackMoodRequest):
 
 @router.post("/playlist", response_model=PlaylistMoodResponse)
 async def get_playlist_mood(request: PlaylistMoodRequest):
-    """
-    Analyze mood for entire playlist (Multi-API)
-    """
+    """Analyze mood for entire playlist"""
     try:
-        print(f"🎵 Analyzing playlist with {len(request.tracks)} tracks")
+        print(f"\n{'='*60}")
+        print(f"🎵 ANALYZING PLAYLIST: {len(request.tracks)} tracks")
+        print(f"{'='*60}\n")
         
         if not request.tracks:
             raise HTTPException(status_code=400, detail="No tracks provided")
@@ -227,17 +217,17 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                     print(f"⚠️ Skipping track {idx}: missing name or artist")
                     continue
                 
+                print(f"🔍 Processing track {idx + 1}/{len(request.tracks)}: {track_name}")
+                
                 cache_key = f"track:mood:{track_name}:{artist_name}:{request.user_id or 'global'}"
                 cached_mood = await cache_service.get_from_cache(cache_key)
                 
                 if cached_mood:
-                    print(f"📦 Cache HIT for track {idx + 1}/{len(request.tracks)}")
+                    print(f"   📦 Cache HIT")
                     mood_data = cached_mood.get('mood')
                     audio_features = cached_mood.get('features')
                     tags = cached_mood.get('tags', [])
                 else:
-                    print(f"🔍 Processing track {idx + 1}/{len(request.tracks)}: {track_name}")
-                    
                     audio_features = await music_service.get_audio_features(track_name, artist_name)
                     if not audio_features:
                         audio_features = music_service.get_default_features()
@@ -264,6 +254,8 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                     }
                     await cache_service.set_in_cache(cache_key, track_cache, expiration=3600)
                 
+                print(f"   ✅ Mood: {mood_data.get('fused_mood', 'Unknown')}")
+                
                 processed_tracks.append({
                     "name": track_name,
                     "artist": artist_name,
@@ -283,13 +275,18 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
         
         mood_stats = model_service.calculate_playlist_mood_distribution(processed_tracks)
         
+        print(f"\n✅ PLAYLIST ANALYSIS COMPLETE:")
+        print(f"   Processed: {len(processed_tracks)} tracks")
+        print(f"   Overall Mood: {mood_stats.get('overall_mood', 'Mixed')}")
+        print(f"   Distribution: {mood_stats.get('distribution', {})}")
+        print(f"{'='*60}\n")
+        
         response = {
             "tracks": processed_tracks,
             "moodDistribution": mood_stats.get('distribution', {}),
             "overallMood": mood_stats.get('overall_mood', 'Mixed')
         }
         
-        print(f"✅ Playlist analysis complete: {len(processed_tracks)} tracks")
         return response
         
     except HTTPException:
@@ -300,30 +297,22 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================
-# NEW SPOTIFY ENDPOINTS (Hybrid Approach)
-# ============================================
-
+# Spotify-specific endpoints
 @router.post("/spotify/track", response_model=Dict[str, Any])
 async def get_spotify_track_mood(
     request: SpotifyTrackMoodRequest,
     authorization: str = Header(None)
 ):
-    """
-    Analyze mood for a Spotify track (HYBRID APPROACH)
-    
-    Uses:
-    - Spotify API: Track metadata
-    - Multi-API: Audio features, mood prediction
-    
-    Requires: Bearer token in Authorization header
-    """
+    """Analyze mood for a Spotify track"""
     try:
         access_token = extract_access_token(authorization)
         
-        print(f"🎵 Analyzing Spotify track: {request.track_id}")
+        print(f"\n{'='*60}")
+        print(f"🎵 ANALYZING SPOTIFY TRACK: {request.track_id}")
+        print(f"{'='*60}\n")
         
         # Get track info from Spotify
+        print("Step 1: Getting track info from Spotify...")
         track_info = await spotify_service.get_track_info(request.track_id, access_token)
         
         if not track_info:
@@ -332,10 +321,15 @@ async def get_spotify_track_mood(
         track_name = track_info['name']
         artist_name = spotify_service.get_primary_artist_name(track_info)
         
-        # Get lyrics sentiment
-        lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
+        print(f"✅ Track: {track_name} by {artist_name}")
         
-        # Use hybrid model service prediction
+        # Get lyrics sentiment
+        print("\nStep 2: Analyzing lyrics...")
+        lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
+        print(f"✅ Lyrics: Polarity={lyrics_sentiment.get('polarity', 0):.2f}")
+        
+        # Predict mood using hybrid approach
+        print("\nStep 3: Predicting mood...")
         mood_data = await model_service.predict_mood_from_spotify_track(
             track_id=request.track_id,
             access_token=access_token,
@@ -343,7 +337,11 @@ async def get_spotify_track_mood(
             user_id=request.user_id
         )
         
-        print(f"✅ Spotify track mood analysis complete: {mood_data.get('fused_mood')}")
+        print(f"\n✅ FINAL RESULT:")
+        print(f"   Fused Mood: {mood_data.get('fused_mood')} ⭐")
+        print(f"   Confidence: {mood_data.get('confidence', 0):.2%}")
+        print(f"{'='*60}\n")
+        
         return mood_data
         
     except (SpotifyAuthError, SpotifyRateLimitError, SpotifyNotFoundError, SpotifyServiceError) as e:
@@ -356,28 +354,200 @@ async def get_spotify_track_mood(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/spotify/currently-playing")
+async def get_currently_playing_mood(
+    authorization: str = Header(None),
+    user_id: Optional[str] = None
+):
+    """Analyze mood of currently playing track"""
+    try:
+        access_token = extract_access_token(authorization)
+        
+        print(f"\n{'='*80}")
+        print(f"🎧 ANALYZING CURRENTLY PLAYING TRACK")
+        print(f"{'='*80}\n")
+        
+        # Get currently playing
+        print("Step 1: Fetching playback state...")
+        playback_data = await spotify_service.get_currently_playing(access_token)
+        
+        if not playback_data or not playback_data.get('is_playing'):
+            print("❌ No track currently playing")
+            return {
+                'is_playing': False,
+                'message': 'No track currently playing',
+                'timestamp': None
+            }
+        
+        # Handle podcasts
+        if playback_data.get('type') == 'episode':
+            print("📻 Currently playing: Podcast Episode")
+            return {
+                'is_playing': True,
+                'type': 'episode',
+                'episode': playback_data['episode'],
+                'device': playback_data['device'],
+                'progress_ms': playback_data['progress_ms'],
+                'message': 'Mood analysis not available for podcast episodes'
+            }
+        
+        track = playback_data['track']
+        device = playback_data['device']
+        track_id = track['id']
+        track_name = track['name']
+        artist_name = track['artists'][0]['name']
+        
+        print(f"✅ Playing: {track_name} by {artist_name}")
+        print(f"   Device: {device['name']} ({device['type']})")
+        print(f"   Volume: {device.get('volume_percent')}%")
+        
+        # Get audio features
+        print("\nStep 2: Getting audio features...")
+        try:
+            audio_features = await music_service.get_audio_features(track_name, artist_name)
+            if not audio_features:
+                audio_features = music_service.get_default_features()
+            
+            print(f"✅ Features: V={audio_features.get('valence', 0):.2f}, E={audio_features.get('energy', 0):.2f}")
+        except Exception as e:
+            print(f"⚠️ Audio features error: {e}")
+            audio_features = music_service.get_default_features()
+        
+        # Get lyrics sentiment
+        print("\nStep 3: Analyzing lyrics...")
+        try:
+            lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
+            print(f"✅ Lyrics: Polarity={lyrics_sentiment.get('polarity', 0):.2f}")
+        except Exception as e:
+            print(f"⚠️ Lyrics error: {e}")
+            lyrics_sentiment = {'polarity': 0.0, 'subjectivity': 0.0}
+        
+        # Get genre
+        print("\nStep 4: Getting genre...")
+        try:
+            tags = await music_service.get_lastfm_tags(track_name, artist_name)
+            genre = tags[0] if tags else None
+            print(f"✅ Genre: {genre or 'Unknown'}")
+        except Exception as e:
+            print(f"⚠️ Genre error: {e}")
+            genre = None
+        
+        # Predict mood
+        print("\nStep 5: Predicting mood...")
+        try:
+            mood_data = await model_service.predict_mood_from_features(
+                audio_features,
+                lyrics_sentiment,
+                user_id=user_id,
+                track_id=track_id,
+                genre=genre
+            )
+            
+            print(f"\n✅ MOOD PREDICTED:")
+            print(f"   Audio Mood: {mood_data['audio_mood']}")
+            print(f"   Lyrics Mood: {mood_data['lyrics_mood']}")
+            print(f"   Fused Mood: {mood_data['fused_mood']} ⭐")
+            print(f"   Confidence: {mood_data['confidence']:.2%}")
+            
+        except Exception as e:
+            print(f"⚠️ Mood prediction error: {e}")
+            traceback.print_exc()
+            
+            mood_data = {
+                'audio_mood': 'Unknown',
+                'lyrics_mood': 'Neutral',
+                'fused_mood': 'Unknown',
+                'confidence': 0.0,
+                'source': 'fallback',
+                'scores': {
+                    'valence': audio_features.get('valence', 0.5),
+                    'energy': audio_features.get('energy', 0.5)
+                }
+            }
+        
+        # Build response
+        response = {
+            'is_playing': True,
+            'type': 'track',
+            'timestamp': playback_data.get('timestamp'),
+            
+            'track': {
+                'id': track['id'],
+                'name': track['name'],
+                'artists': track['artists'],
+                'album': track['album'],
+                'images': track['album']['images'],
+                'duration_ms': track['duration_ms'],
+                'popularity': track['popularity'],
+                'explicit': track.get('explicit', False),
+                'external_url': track['external_url'],
+                'uri': track['uri']
+            },
+            
+            'device': {
+                'id': device['id'],
+                'name': device['name'],
+                'type': device['type'],
+                'volume_percent': device.get('volume_percent'),
+                'is_active': device.get('is_active', True)
+            },
+            
+            'progress_ms': playback_data['progress_ms'],
+            'shuffle_state': playback_data['shuffle_state'],
+            'repeat_state': playback_data['repeat_state'],
+            'context': playback_data.get('context'),
+            
+            'mood_analysis': {
+                'fused_mood': mood_data['fused_mood'],
+                'audio_mood': mood_data['audio_mood'],
+                'lyrics_mood': mood_data['lyrics_mood'],
+                'confidence': mood_data['confidence'],
+                'source': mood_data['source'],
+                'scores': mood_data['scores']
+            },
+            
+            'audio_features': {
+                'valence': audio_features.get('valence', 0.5),
+                'energy': audio_features.get('energy', 0.5),
+                'danceability': audio_features.get('danceability', 0.5),
+                'acousticness': audio_features.get('acousticness', 0.5),
+                'tempo': audio_features.get('tempo', 120)
+            },
+            
+            'genre': genre,
+            'analysis_timestamp': datetime.utcnow().isoformat()
+        }
+        
+        print(f"\n{'='*80}")
+        print(f"✅ ANALYSIS COMPLETE")
+        print(f"{'='*80}\n")
+        
+        return response
+        
+    except (SpotifyAuthError, SpotifyRateLimitError, SpotifyNotFoundError, SpotifyServiceError) as e:
+        handle_spotify_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"\n❌ ANALYSIS FAILED: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to analyze currently playing track: {str(e)}")
+
+
 @router.post("/spotify/playlist", response_model=Dict[str, Any])
 async def get_spotify_playlist_mood(
     request: SpotifyPlaylistMoodRequest,
     authorization: str = Header(None)
 ):
-    """
-    Analyze mood for entire Spotify playlist (HYBRID APPROACH)
-    
-    UPDATED: Now handles full pagination for large playlists (100+ tracks)
-    
-    Uses:
-    - Spotify API: Playlist tracks, metadata (with pagination)
-    - Multi-API: Audio features, mood prediction
-    
-    Requires: Bearer token in Authorization header
-    """
+    """Analyze mood for entire Spotify playlist"""
     try:
         access_token = extract_access_token(authorization)
         
-        print(f"📂 Analyzing Spotify playlist: {request.playlist_id}")
+        print(f"\n{'='*60}")
+        print(f"📂 ANALYZING SPOTIFY PLAYLIST: {request.playlist_id}")
+        print(f"{'='*60}\n")
         
-        # Get ALL playlist tracks from Spotify (with pagination)
+        # Get playlist tracks
         tracks = await spotify_service.get_playlist_tracks(
             request.playlist_id, 
             access_token,
@@ -387,14 +557,13 @@ async def get_spotify_playlist_mood(
         if not tracks:
             raise HTTPException(status_code=404, detail="Playlist not found or empty")
         
-        print(f"🎵 Found {len(tracks)} tracks in playlist")
+        print(f"🎵 Found {len(tracks)} tracks in playlist\n")
         
         processed_tracks = []
         skipped_tracks = 0
         
         for idx, track in enumerate(tracks):
             try:
-                # Handle unavailable tracks
                 if track.get('unavailable'):
                     print(f"⚠️ Skipping unavailable track at position {idx + 1}")
                     skipped_tracks += 1
@@ -402,27 +571,24 @@ async def get_spotify_playlist_mood(
                 
                 track_id = track.get('id')
                 if not track_id:
-                    print(f"⚠️ Skipping track without ID at position {idx + 1}")
                     skipped_tracks += 1
                     continue
                 
                 track_name = track['name']
                 artist_name = track['artists'][0]['name'] if track['artists'] else "Unknown"
                 
-                print(f"🔍 Processing track {idx + 1}/{len(tracks)}: {track_name}")
+                print(f"🔍 {idx + 1}/{len(tracks)}: {track_name}")
                 
                 # Check cache
                 cache_key = f"spotify:track:mood:{track_id}:{request.user_id or 'global'}"
                 cached_mood = await cache_service.get_from_cache(cache_key)
                 
                 if cached_mood:
-                    print(f"📦 Cache HIT")
+                    print(f"   📦 Cache HIT")
                     mood_data = cached_mood
                 else:
-                    # Get lyrics sentiment
                     lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
                     
-                    # Predict mood using hybrid approach
                     mood_data = await model_service.predict_mood_from_spotify_track(
                         track_id=track_id,
                         access_token=access_token,
@@ -430,10 +596,10 @@ async def get_spotify_playlist_mood(
                         user_id=request.user_id
                     )
                     
-                    # Cache for 1 hour
                     await cache_service.set_in_cache(cache_key, mood_data, expiration=3600)
                 
-                # Build track response
+                print(f"   ✅ Mood: {mood_data.get('fused_mood', 'Unknown')}")
+                
                 processed_tracks.append({
                     "id": track_id,
                     "name": track_name,
@@ -451,7 +617,7 @@ async def get_spotify_playlist_mood(
                 })
                 
             except Exception as track_error:
-                print(f"⚠️ Error processing track {idx}: {track_error}")
+                print(f"   ⚠️ Error: {track_error}")
                 skipped_tracks += 1
                 continue
         
@@ -461,8 +627,15 @@ async def get_spotify_playlist_mood(
                 detail=f"Failed to process any tracks. {skipped_tracks} tracks were skipped."
             )
         
-        # Calculate mood distribution
         mood_stats = model_service.calculate_playlist_mood_distribution(processed_tracks)
+        
+        print(f"\n✅ PLAYLIST ANALYSIS COMPLETE:")
+        print(f"   Total: {len(tracks)}")
+        print(f"   Processed: {len(processed_tracks)}")
+        print(f"   Skipped: {skipped_tracks}")
+        print(f"   Overall Mood: {mood_stats.get('overall_mood', 'Mixed')}")
+        print(f"   Distribution: {mood_stats.get('distribution', {})}")
+        print(f"{'='*60}\n")
         
         response = {
             "playlist_id": request.playlist_id,
@@ -476,11 +649,6 @@ async def get_spotify_playlist_mood(
             "dominant_percentage": mood_stats.get('dominant_percentage', 0)
         }
         
-        print(f"✅ Spotify playlist analysis complete:")
-        print(f"   • Total tracks: {len(tracks)}")
-        print(f"   • Processed: {len(processed_tracks)}")
-        print(f"   • Skipped: {skipped_tracks}")
-        
         return response
         
     except (SpotifyAuthError, SpotifyRateLimitError, SpotifyNotFoundError, SpotifyServiceError) as e:
@@ -493,253 +661,12 @@ async def get_spotify_playlist_mood(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/spotify/currently-playing")
-async def get_currently_playing_mood(
-    authorization: str = Header(None),
-    user_id: Optional[str] = None
-):
-    """
-    Analyze mood of currently playing track (HYBRID APPROACH)
-    
-    Flow:
-    1. Get currently playing from Spotify (with ALL details)
-    2. Extract track info
-    3. Get audio features from Multi-API
-    4. Get lyrics sentiment
-    5. Predict mood with ML model
-    6. Return COMPLETE response with playback state
-    
-    Uses:
-    - Spotify API: Currently playing track info + device + playback state
-    - Multi-API: Audio features, mood prediction
-    
-    Requires: Bearer token in Authorization header
-    """
-    try:
-        access_token = extract_access_token(authorization)
-        
-        print(f"\n{'='*60}")
-        print(f"🎧 ANALYZING CURRENTLY PLAYING TRACK")
-        print(f"{'='*60}")
-        
-        # STEP 1: Get currently playing from Spotify (with ALL details)
-        print("\n📡 Step 1: Fetching playback state from Spotify...")
-        playback_data = await spotify_service.get_currently_playing(access_token)
-        
-        if not playback_data or not playback_data.get('is_playing'):
-            print("❌ No track currently playing")
-            return {
-                'is_playing': False,
-                'message': 'No track currently playing',
-                'timestamp': None
-            }
-        
-        # Handle podcasts/episodes
-        if playback_data.get('type') == 'episode':
-            print("📻 Currently playing: Podcast Episode")
-            return {
-                'is_playing': True,
-                'type': 'episode',
-                'episode': playback_data['episode'],
-                'device': playback_data['device'],
-                'progress_ms': playback_data['progress_ms'],
-                'message': 'Mood analysis not available for podcast episodes'
-            }
-        
-        # Extract track and playback info
-        track = playback_data['track']
-        device = playback_data['device']
-        track_id = track['id']
-        track_name = track['name']
-        artist_name = track['artists'][0]['name']
-        
-        print(f"✅ Currently Playing: {track_name} by {artist_name}")
-        print(f"   Device: {device['name']} ({device['type']})")
-        print(f"   Volume: {device.get('volume_percent')}%")
-        print(f"   Shuffle: {playback_data['shuffle_state']}")
-        print(f"   Repeat: {playback_data['repeat_state']}")
-        
-        # STEP 2: Get audio features from Multi-API
-        print("\n🎹 Step 2: Getting audio features...")
-        try:
-            audio_features = await music_service.get_audio_features(
-                track_name,
-                artist_name
-            )
-            
-            if not audio_features:
-                print("⚠️ Using default audio features")
-                audio_features = music_service.get_default_features()
-            else:
-                print(f"✅ Audio features retrieved")
-                print(f"   Valence: {audio_features.get('valence', 0):.2f}")
-                print(f"   Energy: {audio_features.get('energy', 0):.2f}")
-                
-        except Exception as e:
-            print(f"⚠️ Audio features error: {e}")
-            audio_features = music_service.get_default_features()
-        
-        # STEP 3: Get lyrics sentiment
-        print("\n📝 Step 3: Analyzing lyrics sentiment...")
-        try:
-            lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(
-                track_name,
-                artist_name
-            )
-            
-            if lyrics_sentiment:
-                print(f"✅ Lyrics sentiment: {lyrics_sentiment.get('polarity', 0):.2f}")
-            else:
-                print("⚠️ No lyrics found, using neutral sentiment")
-                lyrics_sentiment = {'polarity': 0.0, 'subjectivity': 0.0}
-                
-        except Exception as e:
-            print(f"⚠️ Lyrics error: {e}")
-            lyrics_sentiment = {'polarity': 0.0, 'subjectivity': 0.0}
-        
-        # STEP 4: Get genre for adaptive weighting
-        print("\n🎸 Step 4: Getting genre tags...")
-        try:
-            tags = await music_service.get_lastfm_tags(track_name, artist_name)
-            genre = tags[0] if tags else None
-            
-            if genre:
-                print(f"✅ Genre: {genre}")
-            else:
-                print("⚠️ No genre found, using default weighting")
-                
-        except Exception as e:
-            print(f"⚠️ Genre error: {e}")
-            genre = None
-        
-        # STEP 5: Predict mood with ML model
-        print("\n🤖 Step 5: Predicting mood...")
-        try:
-            mood_data = await model_service.predict_mood_from_features(
-                audio_features,
-                lyrics_sentiment,
-                user_id=user_id,
-                track_id=track_id,
-                genre=genre
-            )
-            
-            print(f"✅ Mood predicted: {mood_data['fused_mood']} (confidence: {mood_data['confidence']:.2f})")
-            
-        except Exception as e:
-            print(f"⚠️ Mood prediction error: {e}")
-            traceback.print_exc()
-            
-            # Fallback mood
-            mood_data = {
-                'audio_mood': 'Unknown',
-                'lyrics_mood': 'Neutral',
-                'fused_mood': 'Unknown',
-                'confidence': 0.0,
-                'source': 'fallback',
-                'scores': {
-                    'valence': audio_features.get('valence', 0.5),
-                    'energy': audio_features.get('energy', 0.5)
-                }
-            }
-        
-        # STEP 6: Build complete response
-        print("\n📦 Step 6: Building response...")
-        
-        response = {
-            # Playback state (from Spotify)
-            'is_playing': True,
-            'type': 'track',
-            'timestamp': playback_data.get('timestamp'),
-            
-            # Track info (from Spotify)
-            'track': {
-                'id': track['id'],
-                'name': track['name'],
-                'artists': track['artists'],
-                'album': track['album'],
-                'images': track['album']['images'],
-                'duration_ms': track['duration_ms'],
-                'popularity': track['popularity'],
-                'explicit': track.get('explicit', False),
-                'external_url': track['external_url'],
-                'uri': track['uri']
-            },
-            
-            # Device info (from Spotify)
-            'device': {
-                'id': device['id'],
-                'name': device['name'],
-                'type': device['type'],
-                'volume_percent': device.get('volume_percent'),
-                'is_active': device.get('is_active', True)
-            },
-            
-            # Playback controls (from Spotify)
-            'progress_ms': playback_data['progress_ms'],
-            'shuffle_state': playback_data['shuffle_state'],
-            'repeat_state': playback_data['repeat_state'],
-            'context': playback_data.get('context'),
-            
-            # Mood analysis (from ML model)
-            'mood_analysis': {
-                'fused_mood': mood_data['fused_mood'],
-                'audio_mood': mood_data['audio_mood'],
-                'lyrics_mood': mood_data['lyrics_mood'],
-                'confidence': mood_data['confidence'],
-                'source': mood_data['source'],
-                'scores': mood_data['scores']
-            },
-            
-            # Audio features (from Multi-API)
-            'audio_features': {
-                'valence': audio_features.get('valence', 0.5),
-                'energy': audio_features.get('energy', 0.5),
-                'danceability': audio_features.get('danceability', 0.5),
-                'acousticness': audio_features.get('acousticness', 0.5),
-                'tempo': audio_features.get('tempo', 120)
-            },
-            
-            # Metadata
-            'genre': genre,
-            'analysis_timestamp': playback_data.get('timestamp')
-        }
-        
-        print(f"\n{'='*60}")
-        print(f"✅ ANALYSIS COMPLETE")
-        print(f"{'='*60}\n")
-        
-        return response
-        
-    except (SpotifyAuthError, SpotifyRateLimitError, SpotifyNotFoundError, SpotifyServiceError) as e:
-        handle_spotify_error(e)
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"\n❌ ANALYSIS FAILED: {e}")
-        traceback.print_exc()
-        
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to analyze currently playing track: {str(e)}"
-        )
-
-
 @router.get("/spotify/playlists")
 async def get_user_playlists(
     authorization: str = Header(None),
-    fetch_all: bool = True  # NEW: Option to get all playlists
+    fetch_all: bool = True
 ):
-    """
-    Get user's Spotify playlists
-    
-    UPDATED: Now supports full pagination for users with 50+ playlists
-    
-    Uses: Spotify API only
-    Requires: Bearer token in Authorization header
-    
-    Args:
-        fetch_all: If True, fetches all playlists. If False, fetches first 50.
-    """
+    """Get user's Spotify playlists"""
     try:
         access_token = extract_access_token(authorization)
         
@@ -762,14 +689,12 @@ async def get_user_playlists(
 
 
 # ============================================
-# UTILITY ENDPOINTS
+# UTILITY ENDPOINTS (from code 1)
 # ============================================
 
 @router.post("/search-and-analyze")
 async def search_and_analyze(request: Dict[str, Any]):
-    """
-    Search for a track and analyze its mood (Multi-API)
-    """
+    """Search for a track and analyze its mood (Multi-API)"""
     try:
         query = request.get('query')
         user_id = request.get('user_id')
@@ -808,9 +733,7 @@ async def search_and_analyze(request: Dict[str, Any]):
 
 @router.post("/batch-analyze")
 async def batch_analyze_tracks(request: Dict[str, Any]):
-    """
-    Batch analyze multiple tracks efficiently
-    """
+    """Batch analyze multiple tracks efficiently"""
     try:
         tracks = request.get('tracks', [])
         user_id = request.get('user_id')
@@ -841,11 +764,7 @@ async def batch_analyze_tracks(request: Dict[str, Any]):
 
 @router.get("/health")
 async def health_check():
-    """
-    Health check endpoint with detailed service status
-    
-    UPDATED: Now includes new Spotify service exception handling status
-    """
+    """Health check endpoint"""
     model_loaded = model_service.mood_model is not None
     cache_connected = cache_service.is_connected()
     ytmusic_available = music_service.ytmusic is not None
@@ -855,7 +774,6 @@ async def health_check():
     spotify_configured = False
     spotify_status = "unavailable"
     try:
-        # Try to initialize server client
         spotify_service.get_spotify_client()
         spotify_configured = True
         spotify_status = "healthy"
@@ -870,6 +788,7 @@ async def health_check():
         "services": {
             "ml_model": {
                 "loaded": model_loaded,
+                "mood_classes": model_service.MOOD_CLASSES if hasattr(model_service, 'MOOD_CLASSES') else [],
                 "status": "active" if model_loaded else "fallback"
             },
             "cache": {
@@ -930,7 +849,7 @@ async def health_check():
                 "custom_exceptions": True,
                 "rate_limit_protection": True,
                 "token_expiration_detection": True,
-                "retry_logic": False  # Can be added if needed
+                "retry_logic": False
             }
         },
         "required_spotify_scopes": spotify_service.get_required_scopes()
@@ -939,28 +858,17 @@ async def health_check():
 
 @router.get("/spotify/test-connection")
 async def test_spotify_connection(authorization: str = Header(None)):
-    """
-    Test Spotify API connection and token validity
-    
-    NEW ENDPOINT: Helps debug authentication issues
-    
-    Returns:
-        - Token validity status
-        - Available endpoints based on scopes
-        - User profile info (if token is valid)
-    """
+    """Test Spotify API connection and token validity"""
     try:
         access_token = extract_access_token(authorization)
         
         print("🧪 Testing Spotify connection...")
         
-        # Try to get user profile (requires basic scopes)
         sp = spotify_service.get_spotify_client(access_token)
         
         try:
             user_profile = sp.current_user()
             
-            # Verify available scopes
             available_endpoints = spotify_service.verify_token_scopes(access_token)
             
             return {
@@ -971,7 +879,7 @@ async def test_spotify_connection(authorization: str = Header(None)):
                     "display_name": user_profile.get('display_name'),
                     "email": user_profile.get('email'),
                     "country": user_profile.get('country'),
-                    "product": user_profile.get('product')  # free/premium
+                    "product": user_profile.get('product')
                 },
                 "available_endpoints": available_endpoints,
                 "required_scopes": spotify_service.get_required_scopes(),
@@ -1001,14 +909,7 @@ async def test_spotify_connection(authorization: str = Header(None)):
 
 @router.get("/spotify/rate-limit-status")
 async def get_rate_limit_status():
-    """
-    Check current rate limit status
-    
-    NEW ENDPOINT: Helps monitor API usage
-    
-    Returns:
-        Current rate limit counts for different endpoints
-    """
+    """Check current rate limit status"""
     try:
         rate_limiter = spotify_service.rate_limiter
         
@@ -1016,7 +917,6 @@ async def get_rate_limit_status():
         for endpoint, requests in rate_limiter.requests.items():
             limit, window = rate_limiter.limits.get(endpoint, rate_limiter.limits['default'])
             
-            # Count recent requests
             import time
             now = time.time()
             recent_requests = [
@@ -1047,19 +947,9 @@ async def clear_spotify_cache(
     authorization: str = Header(None),
     cache_type: Optional[str] = None
 ):
-    """
-    Clear Spotify-related cache entries
-    
-    NEW ENDPOINT: Useful for debugging and forcing fresh data
-    
-    Args:
-        cache_type: Type of cache to clear (playlists, tracks, user_data, all)
-    """
+    """Clear Spotify-related cache entries"""
     try:
         access_token = extract_access_token(authorization)
-        
-        # This would require implementing cache clearing in cache_service
-        # For now, return a placeholder response
         
         return {
             "status": "success",
@@ -1083,11 +973,7 @@ async def clear_spotify_cache(
 
 @router.get("/debug/endpoints")
 async def list_available_endpoints():
-    """
-    List all available API endpoints with descriptions
-    
-    Useful for API documentation and debugging
-    """
+    """List all available API endpoints with descriptions"""
     return {
         "endpoints": {
             "multi_api": {
@@ -1124,32 +1010,35 @@ async def list_available_endpoints():
 
 
 # ============================================
-# NOTE: Exception handlers must be added to the main app, not router
-# Add these to main.py instead:
-#
-# from services.spotify_service import SpotifyAuthError, SpotifyRateLimitError
-#
-# @app.exception_handler(SpotifyAuthError)
-# async def spotify_auth_error_handler(request, exc):
-#     return JSONResponse(
-#         status_code=401,
-#         content={
-#             "error": "authentication_failed",
-#             "message": str(exc),
-#             "action": "Please re-authenticate with Spotify"
-#         }
-#     )
-#
-# @app.exception_handler(SpotifyRateLimitError)
-# async def spotify_rate_limit_error_handler(request, exc):
-#     return JSONResponse(
-#         status_code=429,
-#         content={
-#             "error": "rate_limit_exceeded",
-#             "message": str(exc),
-#             "retry_after": exc.retry_after,
-#             "action": f"Please wait {exc.retry_after} seconds before retrying"
-#         },
-#         headers={"Retry-After": str(exc.retry_after)}
-#     )
+# EXCEPTION HANDLERS NOTE
 # ============================================
+"""
+Add these exception handlers to your main.py:
+
+from fastapi.responses import JSONResponse
+from services.spotify_service import SpotifyAuthError, SpotifyRateLimitError
+
+@app.exception_handler(SpotifyAuthError)
+async def spotify_auth_error_handler(request, exc):
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": "authentication_failed",
+            "message": str(exc),
+            "action": "Please re-authenticate with Spotify"
+        }
+    )
+
+@app.exception_handler(SpotifyRateLimitError)
+async def spotify_rate_limit_error_handler(request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit_exceeded",
+            "message": str(exc),
+            "retry_after": exc.retry_after,
+            "action": f"Please wait {exc.retry_after} seconds before retrying"
+        },
+        headers={"Retry-After": str(exc.retry_after)}
+    )
+"""

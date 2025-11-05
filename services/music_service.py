@@ -1,13 +1,8 @@
 """
-Multi-API Music Service for Moodify-AI
-Integrates: YTMusicAPI, Last.fm, AcousticBrainz, MusicBrainz
+Multi-API Music Service for MoodiQ-AI
+Integrates: YTMusicAPI, Last.fm, AcousticBrainz, MusicBrainz, Gemini AI
 
-Replaces restricted Spotify Web API endpoints:
-- Audio Features → AcousticBrainz
-- Recommendations → Last.fm Similar Tracks
-- Related Artists → Last.fm Similar Artists
-- Track Search → YTMusicAPI
-- Genre/Mood Tags → Last.fm
+UPDATED: Fixed Last.fm initialization to load after .env
 """
 
 import os
@@ -16,22 +11,38 @@ import musicbrainzngs
 from ytmusicapi import YTMusic
 from typing import List, Dict, Optional, Any
 from . import cache_service
-
+from . import gemini_service
 
 # ============================================
-# API Configuration
+# API Configuration - Delayed Loading
 # ============================================
-
-# Last.fm API
-LASTFM_API_KEY = os.getenv("API_KEY_LASTFM")
-LASTFM_API_SECRET = os.getenv("API_SECRET_LASTFM")
 LASTFM_BASE_URL = "http://ws.audioscrobbler.com/2.0/"
 
+# Initialize these at module level
+LASTFM_API_KEY = None
+LASTFM_API_SECRET = None
+_lastfm_initialized = False
+
+def _init_lastfm():
+    """Initialize Last.fm API (called lazily on first use)"""
+    global LASTFM_API_KEY, LASTFM_API_SECRET, _lastfm_initialized
+    
+    if _lastfm_initialized:
+        return
+    
+    _lastfm_initialized = True
+    LASTFM_API_KEY = os.getenv("LASTFM_API_KEY") or os.getenv("API_KEY_LASTFM")
+    LASTFM_API_SECRET = os.getenv("LASTFM_API_SECRET") or os.getenv("API_SECRET_LASTFM")
+    
+    if LASTFM_API_KEY:
+        print(f"✅ Last.fm API configured")
+    else:
+        print("⚠️  Last.fm API key not found - recommendations will be limited")
 # MusicBrainz Configuration
 musicbrainzngs.set_useragent(
-    "MoodifyAI",
+    "MoodiQ",
     "1.0",
-    "https://github.com/yourusername/moodify-ai"
+    "https://moodiq.netlify.app"
 )
 
 # AcousticBrainz Base URL
@@ -172,7 +183,6 @@ async def get_track_info(
         print(f"❌ Error getting track info: {e}")
         return None
 
-
 # ============================================
 # 2. MusicBrainz Integration (Get MBID)
 # ============================================
@@ -281,64 +291,79 @@ async def get_audio_features_from_mbid(mbid: str) -> Optional[Dict]:
 def normalize_acousticbrainz_features(data: Dict) -> Dict:
     """
     Normalize AcousticBrainz features to Spotify-like format
-    
-    AcousticBrainz provides different features, so we map them:
-    - valence: Derived from mood_happy
-    - energy: From dynamic_complexity
-    - danceability: From danceability
-    - acousticness: Inverted from timbre brightness
-    - tempo: From bpm
-    - loudness: From loudness
+    FIX: Better error handling and safer dictionary access
     """
     try:
-        # Extract relevant sections
-        rhythm = data.get('rhythm', {})
-        tonal = data.get('tonal', {})
-        lowlevel = data.get('lowlevel', {})
-        metadata = data.get('metadata', {})
+        # Helper function for safe nested dict access
+        def safe_get(nested_dict, *keys, default=0.5):
+            """Safely navigate nested dictionaries"""
+            try:
+                result = nested_dict
+                for key in keys:
+                    if isinstance(result, dict):
+                        result = result.get(key, {})
+                    else:
+                        return default
+                
+                # Handle the final value
+                if isinstance(result, dict):
+                    # If it's still a dict, try to get 'mean' or 'value'
+                    if 'mean' in result:
+                        return float(result['mean'])
+                    elif 'value' in result:
+                        return float(result['value'])
+                    else:
+                        return default
+                else:
+                    return float(result) if result is not None else default
+            except (KeyError, TypeError, ValueError):
+                return default
         
-        # Map to Spotify-like features
+        # Extract with safe access
         features = {
-            'id': data.get('metadata', {}).get('tags', {}).get('musicbrainz_recordingid', [''])[0],
+            'id': safe_get(data, 'metadata', 'tags', 'musicbrainz_recordingid', default=''),
             
-            # Valence: Use mood_happy if available, else neutral
-            'valence': float(data.get('highlevel', {}).get('mood_happy', {}).get('probability', 0.5)),
+            # Valence: Use mood_happy if available
+            'valence': safe_get(data, 'highlevel', 'mood_happy', 'probability', default=0.5),
             
             # Energy: Use dynamic_complexity
-            'energy': min(1.0, float(lowlevel.get('dynamic_complexity', {}).get('mean', 0.5))),
+            'energy': min(1.0, safe_get(data, 'lowlevel', 'dynamic_complexity', default=0.5)),
             
             # Danceability: Direct mapping
-            'danceability': float(rhythm.get('danceability', {}).get('mean', 0.5)),
+            'danceability': safe_get(data, 'rhythm', 'danceability', default=0.5),
             
             # Acousticness: Inverse of spectral brightness
-            'acousticness': 1.0 - min(1.0, float(lowlevel.get('spectral_centroid', {}).get('mean', 2000)) / 4000),
+            'acousticness': 1.0 - min(1.0, safe_get(data, 'lowlevel', 'spectral_centroid', default=2000) / 4000),
             
             # Instrumentalness: Use voice/instrumental classifier
-            'instrumentalness': 1.0 - float(data.get('highlevel', {}).get('voice_instrumental', {}).get('probability', 0.5)),
+            'instrumentalness': 1.0 - safe_get(data, 'highlevel', 'voice_instrumental', 'probability', default=0.5),
             
             # Speechiness: Estimate from spectral features
-            'speechiness': min(1.0, float(lowlevel.get('spectral_rolloff', {}).get('mean', 2000)) / 8000),
+            'speechiness': min(1.0, safe_get(data, 'lowlevel', 'spectral_rolloff', default=2000) / 8000),
             
             # Tempo (BPM)
-            'tempo': float(rhythm.get('bpm', {}).get('mean', 120.0)),
+            'tempo': safe_get(data, 'rhythm', 'bpm', default=120.0),
             
             # Loudness (dB)
-            'loudness': float(lowlevel.get('loudness', {}).get('mean', -10.0)),
+            'loudness': safe_get(data, 'lowlevel', 'loudness', default=-10.0),
             
             # Liveness: Estimate from noise
-            'liveness': min(1.0, float(lowlevel.get('average_loudness', {}).get('mean', 0.2))),
+            'liveness': min(1.0, safe_get(data, 'lowlevel', 'average_loudness', default=0.2)),
             
             # Key: From tonal features
-            'key': int(tonal.get('key_key', {}).get('mean', 0)) % 12,
+            'key': int(safe_get(data, 'tonal', 'key_key', default=0)) % 12,
             
-            # Mode: Major (1) or Minor (0)
-            'mode': 1 if tonal.get('key_scale', {}).get('mean', 0) == 'major' else 0,
+            # Mode: Major (1) or Minor (0) - safe handling
+            'mode': 1,  # Default to major
             
-            # Time signature: Estimate from beats
-            'time_signature': 4,  # Default to 4/4
+            # Time signature: Default to 4/4
+            'time_signature': 4,
             
             # Duration
-            'duration_ms': int(metadata.get('audio_properties', {}).get('length', 0) * 1000),
+            'duration_ms': int(safe_get(data, 'metadata', 'audio_properties', 'length', default=0) * 1000),
+            
+            # Add source tag
+            'source': 'acousticbrainz'
         }
         
         # Ensure all values are in valid ranges
@@ -354,7 +379,7 @@ def normalize_acousticbrainz_features(data: Dict) -> Dict:
         
     except Exception as e:
         print(f"❌ Feature normalization error: {e}")
-        # Return default features
+        # Return default features on any error
         return get_default_features()
 
 
@@ -375,19 +400,26 @@ def get_default_features() -> Dict:
         'mode': 1,
         'time_signature': 4,
         'duration_ms': 0,
+        'source': 'default'
     }
 
 
 async def get_audio_features(
     track_name: str,
-    artist_name: str
+    artist_name: str,
+    genre: Optional[str] = None,
+    use_gemini_fallback: bool = True
 ) -> Optional[Dict]:
     """
-    Complete pipeline: Get audio features via MusicBrainz → AcousticBrainz
+    Complete pipeline: Get audio features via MusicBrainz → AcousticBrainz → Gemini AI
+    
+    🆕 UPDATED: Now includes Gemini AI fallback when MBID not found
     
     Args:
         track_name: Track name
         artist_name: Artist name
+        genre: Genre hint (helps Gemini estimation)
+        use_gemini_fallback: Whether to use Gemini when MBID/AcousticBrainz fails
         
     Returns:
         Audio features dictionary
@@ -397,31 +429,109 @@ async def get_audio_features(
     cached = await cache_service.get_from_cache(cache_key)
     
     if cached:
+        print(f"📦 Cache HIT: Audio features (source: {cached.get('source', 'unknown')})")
         return cached
     
-    # Step 1: Get MBID from MusicBrainz
+    # Step 1: Try to get MBID from MusicBrainz
     mbid = await get_musicbrainz_id(track_name, artist_name)
     
-    if not mbid:
-        print(f"⚠️ No MBID found, using default features")
-        features = get_default_features()
-        # Cache defaults for shorter time
-        await cache_service.set_in_cache(cache_key, features, expiration=3600)
-        return features
-    
-    # Step 2: Get features from AcousticBrainz
-    features = await get_audio_features_from_mbid(mbid)
-    
-    if not features:
-        print(f"⚠️ No AcousticBrainz features, using defaults")
-        features = get_default_features()
-        # Cache defaults for shorter time
-        await cache_service.set_in_cache(cache_key, features, expiration=3600)
+    if mbid:
+        # Step 2: Try to get features from AcousticBrainz
+        features = await get_audio_features_from_mbid(mbid)
+        
+        if features:
+            print(f"✅ Got features from AcousticBrainz")
+            # Cache for 1 week (reliable data)
+            await cache_service.set_in_cache(cache_key, features, expiration=604800)
+            return features
+        else:
+            print(f"⚠️ No AcousticBrainz data for MBID: {mbid}")
     else:
-        # Cache for 1 week
-        await cache_service.set_in_cache(cache_key, features, expiration=604800)
+        print(f"⚠️ No MBID found for {track_name} by {artist_name}")
+    
+    # Step 3: 🤖 FALLBACK TO GEMINI AI (NEW!)
+    if use_gemini_fallback:
+        print(f"🤖 Trying Gemini AI fallback...")
+        
+        # Get genre if not provided
+        if not genre:
+            tags = await get_lastfm_tags(track_name, artist_name)
+            genre = tags[0] if tags else None
+        
+        gemini_features = await gemini_service.estimate_audio_features_with_gemini(
+            track_name,
+            artist_name,
+            genre=genre
+        )
+        
+        if gemini_features:
+            print(f"✅ Got estimated features from Gemini AI")
+            # Cache for 6 hours (AI-estimated, less reliable than actual audio analysis)
+            await cache_service.set_in_cache(cache_key, gemini_features, expiration=21600)
+            return gemini_features
+        else:
+            print(f"⚠️ Gemini estimation also failed")
+    
+    # Step 4: Final fallback to defaults
+    print(f"⚠️ Using default features (no data sources available)")
+    features = get_default_features()
+    
+    # Cache defaults for shorter time (1 hour) - allows retry sooner
+    await cache_service.set_in_cache(cache_key, features, expiration=3600)
     
     return features
+
+
+async def get_audio_features_enhanced(
+    track_name: str,
+    artist_name: str,
+    album_name: Optional[str] = None,
+    lyrics_snippet: Optional[str] = None
+) -> Optional[Dict]:
+    """
+    🆕 Enhanced audio feature extraction with maximum context for Gemini
+    
+    Use this when you have additional metadata (album, lyrics) for better AI estimation
+    
+    Args:
+        track_name: Track name
+        artist_name: Artist name
+        album_name: Album name (helps Gemini)
+        lyrics_snippet: First few lines of lyrics (helps Gemini significantly)
+        
+    Returns:
+        Audio features dictionary
+    """
+    # Try standard pipeline first
+    features = await get_audio_features(track_name, artist_name, use_gemini_fallback=False)
+    
+    # If we got real data (not defaults), return it
+    if features and features.get('source') in ['acousticbrainz', 'spotify']:
+        return features
+    
+    # Otherwise, use enhanced Gemini estimation with all context
+    print(f"🤖 Using enhanced Gemini estimation with full context...")
+    
+    # Get genre tags
+    tags = await get_lastfm_tags(track_name, artist_name)
+    genre = tags[0] if tags else None
+    
+    gemini_features = await gemini_service.estimate_audio_features_with_gemini(
+        track_name,
+        artist_name,
+        album_name=album_name,
+        genre=genre,
+        lyrics_snippet=lyrics_snippet
+    )
+    
+    if gemini_features:
+        print(f"✅ Got enhanced Gemini features")
+        cache_key = f"features:{track_name}:{artist_name}"
+        await cache_service.set_in_cache(cache_key, gemini_features, expiration=21600)
+        return gemini_features
+    
+    # Final fallback
+    return get_default_features()
 
 
 # ============================================
@@ -442,6 +552,7 @@ async def get_lastfm_tags(
     Returns:
         List of tags
     """
+    _init_lastfm() 
     cache_key = f"lastfm:tags:{track_name}:{artist_name}"
     cached = await cache_service.get_from_cache(cache_key)
     
@@ -498,6 +609,7 @@ async def get_similar_tracks_lastfm(
     Returns:
         List of similar tracks
     """
+    _init_lastfm() 
     cache_key = f"lastfm:similar:{track_name}:{artist_name}:{limit}"
     cached = await cache_service.get_from_cache(cache_key)
     
@@ -561,6 +673,7 @@ async def get_similar_artists_lastfm(
     Returns:
         List of similar artists
     """
+    _init_lastfm() 
     cache_key = f"lastfm:similar_artists:{artist_name}:{limit}"
     cached = await cache_service.get_from_cache(cache_key)
     
@@ -642,7 +755,7 @@ async def get_recommendations(
     # Enrich with audio features
     recommendations = []
     for track in similar_tracks[:limit]:
-        # Get audio features
+        # Get audio features (will use Gemini if needed!)
         features = await get_audio_features(
             track['name'],
             track['artist']
@@ -690,6 +803,7 @@ async def batch_get_audio_features(
 ) -> List[Optional[Dict]]:
     """
     Get audio features for multiple tracks
+    🆕 Now uses Gemini fallback automatically
     
     Args:
         tracks: List of dicts with 'name' and 'artist' keys
@@ -726,7 +840,16 @@ async def batch_get_audio_features(
         else:
             results.append(result)
     
-    print(f"✅ Batch fetch complete: {len([f for f in results if f])} successful")
+    # Count sources
+    sources = {}
+    for r in results:
+        source = r.get('source', 'unknown')
+        sources[source] = sources.get(source, 0) + 1
+    
+    print(f"✅ Batch fetch complete:")
+    for source, count in sources.items():
+        print(f"   - {source}: {count} tracks")
+    
     return results
 
 
@@ -737,7 +860,7 @@ async def batch_get_audio_features(
 async def test_music_service():
     """Test all music service functions"""
     print("\n" + "="*60)
-    print("🧪 Testing Multi-API Music Service")
+    print("🧪 Testing Multi-API Music Service (with Gemini)")
     print("="*60)
     
     test_track = "Happy"
@@ -751,24 +874,31 @@ async def test_music_service():
     mbid = await get_musicbrainz_id(test_track, test_artist)
     print(f"   MBID: {mbid}")
     
-    print(f"\n3. Testing AcousticBrainz features...")
+    print(f"\n3. Testing audio features (with Gemini fallback)...")
     features = await get_audio_features(test_track, test_artist)
     if features:
+        print(f"   Source: {features.get('source', 'unknown')}")
         print(f"   Valence: {features['valence']:.3f}")
         print(f"   Energy: {features['energy']:.3f}")
         print(f"   Tempo: {features['tempo']:.1f} BPM")
     
-    print(f"\n4. Testing Last.fm tags...")
+    print(f"\n4. Testing with obscure song (should trigger Gemini)...")
+    obscure_features = await get_audio_features("Some Random Song XYZ", "Unknown Artist ABC")
+    if obscure_features:
+        print(f"   Source: {obscure_features.get('source', 'unknown')}")
+        print(f"   Valence: {obscure_features['valence']:.3f}")
+    
+    print(f"\n5. Testing Last.fm tags...")
     tags = await get_lastfm_tags(test_track, test_artist)
     print(f"   Tags: {', '.join(tags[:5])}")
     
-    print(f"\n5. Testing Last.fm similar tracks...")
+    print(f"\n6. Testing Last.fm similar tracks...")
     similar = await get_similar_tracks_lastfm(test_track, test_artist, limit=5)
     print(f"   Similar tracks: {len(similar)}")
     for track in similar[:3]:
         print(f"   - {track['name']} by {track['artist']} (match: {track['match_score']:.2f})")
     
-    print(f"\n6. Testing recommendations...")
+    print(f"\n7. Testing recommendations...")
     recommendations = await get_recommendations(test_track, test_artist, limit=5)
     print(f"   Recommendations: {len(recommendations)}")
     

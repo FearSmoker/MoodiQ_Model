@@ -1,111 +1,108 @@
 """
-Lyrics fetching and sentiment analysis service for Moodify-AI.
+Lyrics fetching and sentiment analysis service for MoodiQ-AI.
 
 Features:
-- Fetch lyrics from Genius API
+- Fetch lyrics from Genius API (direct REST call)
 - Multi-language support with auto-detection
 - Sentiment analysis using TextBlob
 - Translation for non-English lyrics
+- Gemini AI fallback (only in worst-case)
 - Caching for performance
 """
 
 import os
+import re
+import html
+import requests
 from typing import Dict, Optional
-import lyricsgenius
 from textblob import TextBlob
 from langdetect import detect, LangDetectException
 from . import cache_service
+from . import gemini_service  # ✅ Gemini fallback integration
 
 
-# Global Genius client
-genius: Optional[lyricsgenius.Genius] = None
+# ============================================================
+# Genius API: Direct REST client replacement (no lyricsgenius)
+# ============================================================
 
-
-def get_genius_client() -> lyricsgenius.Genius:
+def fetch_lyrics_from_genius(track_name: str, artist_name: str) -> Optional[str]:
     """
-    Initialize and return Genius API client.
-    
-    Returns:
-        Configured Genius client
+    Fetch lyrics from Genius API via REST + HTML scraping.
     """
-    global genius
-    
-    if genius is None:
-        api_key = os.getenv("GENIUS_API_KEY")
-        
-        if not api_key:
-            print("⚠️ GENIUS_API_KEY not found in environment")
-            print("   Lyrics sentiment analysis will return neutral values")
+    access_token = os.getenv("GENIUS_API_KEY")
+    if not access_token:
+        print("⚠️ GENIUS_API_KEY missing")
+        return None
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    query = f"{track_name} {artist_name}"
+
+    try:
+        # Step 1: Search for song
+        response = requests.get(
+            "https://api.genius.com/search",
+            headers=headers,
+            params={"q": query},
+            timeout=10
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        hits = data.get("response", {}).get("hits", [])
+        if not hits:
+            print(f"⚠️ No Genius results for {query}")
             return None
-        
-        try:
-            genius = lyricsgenius.Genius(
-                api_key,
-                skip_non_songs=True,
-                excluded_terms=["(Remix)", "(Live)"],
-                remove_section_headers=True,
-                timeout=10,
-                retries=2
-            )
-            
-            # Reduce verbosity
-            genius.verbose = False
-            
-            print("✅ Genius API client initialized")
-            
-        except Exception as e:
-            print(f"❌ Failed to initialize Genius client: {e}")
-            genius = None
-    
+
+        # Step 2: Get the song URL from top hit
+        song_url = hits[0]["result"]["url"]
+
+        # Step 3: Scrape lyrics from Genius webpage
+        page = requests.get(song_url, timeout=10)
+        lyrics = re.findall(r'<div[^>]*class="Lyrics__Container[^>]*>(.*?)</div>', page.text, re.S)
+        if lyrics:
+            text = " ".join(html.unescape(re.sub(r"<.*?>", "", l)) for l in lyrics)
+            return text.strip()
+        else:
+            print(f"⚠️ Could not extract lyrics for {query}")
+            return None
+
+    except Exception as e:
+        print(f"❌ Genius fetch failed for {query}: {e}")
+        return None
+
+
+# Dummy placeholder (compatibility)
+genius = True
+def get_genius_client():
+    """Dummy Genius client (kept for backward compatibility)."""
     return genius
 
+
+# ============================================================
+# Utility functions: cleaning, language detection, translation
+# ============================================================
 
 def clean_lyrics(lyrics: str) -> str:
     """
     Clean and normalize lyrics text.
-    
-    Args:
-        lyrics: Raw lyrics string
-        
-    Returns:
-        Cleaned lyrics
     """
     if not lyrics:
         return ""
-    
-    # Remove common artifacts
-    lyrics = lyrics.replace('\n', ' ')
-    lyrics = lyrics.replace('  ', ' ')
-    
-    # Remove Genius annotations (text in brackets)
-    import re
+    lyrics = lyrics.replace('\n', ' ').replace('  ', ' ')
     lyrics = re.sub(r'\[.*?\]', '', lyrics)
-    
-    # Remove "Embed" text that sometimes appears
     lyrics = lyrics.replace('Embed', '')
-    
-    # Remove excessive whitespace
     lyrics = ' '.join(lyrics.split())
-    
     return lyrics.strip()
 
 
 def detect_language(text: str) -> str:
     """
     Detect the language of text.
-    
-    Args:
-        text: Text to analyze
-        
-    Returns:
-        ISO language code (e.g., 'en', 'es', 'fr')
     """
     if not text or len(text.strip()) < 10:
-        return 'en'  # Default to English for short text
-    
+        return 'en'
     try:
-        lang = detect(text)
-        return lang
+        return detect(text)
     except LangDetectException:
         print("⚠️ Language detection failed, defaulting to English")
         return 'en'
@@ -114,181 +111,102 @@ def detect_language(text: str) -> str:
 def translate_to_english(text: str, source_lang: str) -> str:
     """
     Translate text to English for sentiment analysis.
-    
-    Args:
-        text: Text to translate
-        source_lang: Source language code
-        
-    Returns:
-        Translated text (or original if translation fails)
     """
     if source_lang == 'en':
         return text
-    
     try:
         from deep_translator import GoogleTranslator
-        
-        # Split into chunks if too long (Google Translate has 5000 char limit)
-        max_length = 4500  # Leave some buffer
+        max_length = 4500
         if len(text) > max_length:
-            chunks = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-            translated_chunks = []
-            
-            for chunk in chunks:
-                translated = GoogleTranslator(source=source_lang, target='en').translate(chunk)
-                translated_chunks.append(translated)
-            
+            chunks = [text[i:i + max_length] for i in range(0, len(text), max_length)]
+            translated_chunks = [
+                GoogleTranslator(source=source_lang, target='en').translate(chunk)
+                for chunk in chunks
+            ]
             return ' '.join(translated_chunks)
         else:
-            translated = GoogleTranslator(source=source_lang, target='en').translate(text)
-            return translated
-            
+            return GoogleTranslator(source=source_lang, target='en').translate(text)
     except Exception as e:
         print(f"⚠️ Translation failed ({source_lang} → en): {e}")
-        return text  # Return original if translation fails
+        return text
 
 
 def analyze_sentiment(text: str) -> Dict[str, float]:
     """
     Analyze sentiment of text using TextBlob.
-    
-    Args:
-        text: Text to analyze
-        
-    Returns:
-        Dictionary with polarity and subjectivity scores
     """
     if not text or len(text.strip()) < 5:
-        return {
-            "polarity": 0.0,
-            "subjectivity": 0.0
-        }
-    
+        return {"polarity": 0.0, "subjectivity": 0.0}
     try:
         blob = TextBlob(text)
-        
         return {
-            "polarity": blob.sentiment.polarity,      # -1 (negative) to 1 (positive)
-            "subjectivity": blob.sentiment.subjectivity  # 0 (objective) to 1 (subjective)
+            "polarity": blob.sentiment.polarity,
+            "subjectivity": blob.sentiment.subjectivity
         }
     except Exception as e:
         print(f"⚠️ Sentiment analysis failed: {e}")
-        return {
-            "polarity": 0.0,
-            "subjectivity": 0.0
-        }
+        return {"polarity": 0.0, "subjectivity": 0.0}
 
+
+# ============================================================
+# Main: Lyrics fetching + sentiment analysis + caching
+# ============================================================
 
 async def get_lyrics_sentiment(
-    track_name: str, 
+    track_name: str,
     artist_name: str,
     enable_translation: bool = True
 ) -> Dict[str, float]:
     """
     Fetch lyrics and analyze sentiment with multi-language support.
-    
-    Args:
-        track_name: Name of the track
-        artist_name: Name of the artist
-        enable_translation: Whether to translate non-English lyrics
-        
-    Returns:
-        Dictionary with sentiment scores and metadata
+    Falls back to Gemini AI estimation only in the worst case.
     """
-    # Check cache first
+    # 1️⃣ Cache check
     cached = await cache_service.get_cached_lyrics_sentiment(track_name, artist_name)
     if cached:
         print(f"📦 Cache HIT: Lyrics sentiment for {track_name}")
         return cached
-    
+
     print(f"🔍 Fetching lyrics for: {track_name} by {artist_name}")
-    
-    # Get Genius client
     genius_client = get_genius_client()
-    
+
     if not genius_client:
-        # Return neutral sentiment if Genius API not available
-        neutral_sentiment = {
-            "polarity": 0.0,
-            "subjectivity": 0.0,
-            "language": "unknown",
-            "translated": False,
-            "lyrics_found": False
-        }
-        # Cache neutral result for a shorter time
-        await cache_service.cache_lyrics_sentiment(
-            track_name, 
-            artist_name, 
-            neutral_sentiment
-        )
-        return neutral_sentiment
-    
+        print("⚠️ Genius client unavailable")
+        return await _handle_lyrics_failure(track_name, artist_name)
+
     try:
-        # Search for song on Genius
-        song = genius_client.search_song(track_name, artist_name)
-        
-        if not song or not song.lyrics:
+        # 2️⃣ Fetch lyrics (direct REST)
+        lyrics = fetch_lyrics_from_genius(track_name, artist_name)
+        if not lyrics:
             print(f"⚠️ Lyrics not found for: {track_name}")
-            
-            neutral_sentiment = {
-                "polarity": 0.0,
-                "subjectivity": 0.0,
-                "language": "unknown",
-                "translated": False,
-                "lyrics_found": False
-            }
-            
-            # Cache for 1 week (lyrics won't change)
-            await cache_service.cache_lyrics_sentiment(
-                track_name,
-                artist_name,
-                neutral_sentiment
-            )
-            
-            return neutral_sentiment
-        
-        # Clean lyrics
-        lyrics = clean_lyrics(song.lyrics)
-        
+            return await _handle_lyrics_failure(track_name, artist_name, track_name, artist_name)
+
+        # 3️⃣ Clean lyrics
+        lyrics = clean_lyrics(lyrics)
         if not lyrics or len(lyrics) < 20:
             print(f"⚠️ Lyrics too short or empty for: {track_name}")
-            neutral_sentiment = {
-                "polarity": 0.0,
-                "subjectivity": 0.0,
-                "language": "unknown",
-                "translated": False,
-                "lyrics_found": False
-            }
-            await cache_service.cache_lyrics_sentiment(
-                track_name,
-                artist_name,
-                neutral_sentiment
-            )
-            return neutral_sentiment
-        
+            return await _handle_lyrics_failure(track_name, artist_name, track_name, artist_name)
+
         print(f"✅ Lyrics found ({len(lyrics)} chars)")
-        
-        # Detect language
+
+        # 4️⃣ Detect language
         detected_lang = detect_language(lyrics)
         print(f"🌍 Detected language: {detected_lang}")
-        
-        # Translate if not English and translation is enabled
+
         translated = False
         analysis_text = lyrics
-        
+
+        # 5️⃣ Translate if needed
         if enable_translation and detected_lang != 'en':
             print(f"🔄 Translating from {detected_lang} to English...")
             translated_text = translate_to_english(lyrics, detected_lang)
-            
             if translated_text != lyrics:
                 analysis_text = translated_text
                 translated = True
                 print(f"✅ Translation complete")
-        
-        # Analyze sentiment
+
+        # 6️⃣ Sentiment analysis
         sentiment = analyze_sentiment(analysis_text)
-        
-        # Add metadata
         result = {
             "polarity": sentiment["polarity"],
             "subjectivity": sentiment["subjectivity"],
@@ -297,41 +215,80 @@ async def get_lyrics_sentiment(
             "lyrics_found": True,
             "lyrics_length": len(lyrics)
         }
-        
+
         print(f"📊 Sentiment: polarity={sentiment['polarity']:.2f}, "
               f"subjectivity={sentiment['subjectivity']:.2f}")
-        
-        # Cache result for 1 week
-        await cache_service.cache_lyrics_sentiment(
-            track_name,
-            artist_name,
-            result
-        )
-        
+
+        # 7️⃣ Cache for 1 week
+        await cache_service.cache_lyrics_sentiment(track_name, artist_name, result)
         return result
-        
+
     except Exception as e:
         print(f"❌ Error fetching lyrics for {track_name}: {e}")
-        
-        # Return neutral sentiment on error
-        neutral_sentiment = {
+        return await _handle_lyrics_failure(track_name, artist_name, track_name, artist_name, error=str(e))
+
+
+# ============================================================
+# Fallback handler with Gemini AI
+# ============================================================
+
+async def _handle_lyrics_failure(track_name, artist_name, album_name=None, genre=None, error: Optional[str] = None):
+    """
+    Handle cases where lyrics or sentiment fail.
+    Tries Gemini AI as the final fallback (only if everything else fails).
+    """
+    try:
+        print(f"🧠 Using Gemini AI as last-resort fallback for {track_name} by {artist_name}")
+        features = await gemini_service.estimate_audio_features_with_gemini(
+            track_name, artist_name, album_name=album_name, genre=genre
+        )
+
+        if features:
+            fallback_sentiment = {
+                "polarity": (features.get("valence", 0.5) - 0.5) * 2,
+                "subjectivity": features.get("energy", 0.5),
+                "language": "unknown",
+                "translated": False,
+                "lyrics_found": False,
+                "gemini_fallback": True,
+                "features_used": True,
+                "tags": features.get("tags", [])
+            }
+            print(f"✅ Gemini fallback succeeded for {track_name}")
+            await cache_service.cache_lyrics_sentiment(track_name, artist_name, fallback_sentiment)
+            return fallback_sentiment
+
+        else:
+            print(f"⚠️ Gemini AI could not generate fallback sentiment")
+            neutral = {
+                "polarity": 0.0,
+                "subjectivity": 0.0,
+                "language": "unknown",
+                "translated": False,
+                "lyrics_found": False,
+                "gemini_fallback": False
+            }
+            await cache_service.cache_lyrics_sentiment(track_name, artist_name, neutral)
+            return neutral
+
+    except Exception as e:
+        print(f"❌ Gemini fallback failed for {track_name}: {e}")
+        neutral = {
             "polarity": 0.0,
             "subjectivity": 0.0,
             "language": "unknown",
             "translated": False,
             "lyrics_found": False,
-            "error": str(e)
+            "gemini_fallback": False,
+            "error": error or str(e)
         }
-        
-        # Cache error result for 1 hour (might be temporary)
-        await cache_service.set_in_cache(
-            f"lyrics:{track_name}:{artist_name}",
-            neutral_sentiment,
-            expiration=3600
-        )
-        
-        return neutral_sentiment
+        await cache_service.cache_lyrics_sentiment(track_name, artist_name, neutral)
+        return neutral
 
+
+# ============================================================
+# Batch lyrics sentiment fetch
+# ============================================================
 
 async def batch_get_lyrics_sentiment(
     tracks: list,
@@ -339,65 +296,41 @@ async def batch_get_lyrics_sentiment(
 ) -> Dict[str, Dict]:
     """
     Fetch lyrics sentiment for multiple tracks concurrently.
-    
-    Args:
-        tracks: List of dicts with 'name' and 'artist' keys
-        max_concurrent: Maximum concurrent requests
-        
-    Returns:
-        Dictionary mapping track keys to sentiment data
     """
     import asyncio
-    
     results = {}
-    
-    # Create semaphore to limit concurrent requests
     semaphore = asyncio.Semaphore(max_concurrent)
-    
+
     async def fetch_with_semaphore(track):
         async with semaphore:
-            track_key = f"{track['name']}_{track['artist']}"
-            sentiment = await get_lyrics_sentiment(
-                track['name'],
-                track['artist']
-            )
-            return track_key, sentiment
-    
-    # Create tasks
-    tasks = [fetch_with_semaphore(track) for track in tracks]
-    
-    # Execute concurrently
+            key = f"{track['name']}_{track['artist']}"
+            sentiment = await get_lyrics_sentiment(track['name'], track['artist'])
+            return key, sentiment
+
     print(f"🎵 Fetching lyrics for {len(tracks)} tracks (max {max_concurrent} concurrent)...")
-    completed = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Process results
-    for result in completed:
-        if isinstance(result, Exception):
-            print(f"❌ Error in batch fetch: {result}")
+    completed = await asyncio.gather(*[fetch_with_semaphore(t) for t in tracks], return_exceptions=True)
+
+    for r in completed:
+        if isinstance(r, Exception):
+            print(f"❌ Error in batch fetch: {r}")
             continue
-        
-        track_key, sentiment = result
-        results[track_key] = sentiment
-    
+        key, sentiment = r
+        results[key] = sentiment
+
     print(f"✅ Completed batch lyrics fetch: {len(results)}/{len(tracks)} successful")
-    
     return results
 
+
+# ============================================================
+# Mood interpretation + weighting helpers
+# ============================================================
 
 def get_mood_from_lyrics(sentiment: Dict) -> str:
     """
     Determine mood category from lyrics sentiment.
-    
-    Args:
-        sentiment: Sentiment dictionary with polarity and subjectivity
-        
-    Returns:
-        Mood string: 'Positive', 'Negative', or 'Neutral'
     """
     polarity = sentiment.get('polarity', 0.0)
     subjectivity = sentiment.get('subjectivity', 0.0)
-    
-    # High subjectivity = emotional lyrics
     if subjectivity > 0.5:
         if polarity > 0.2:
             return "Positive"
@@ -406,7 +339,6 @@ def get_mood_from_lyrics(sentiment: Dict) -> str:
         else:
             return "Mixed"
     else:
-        # Low subjectivity = more objective/factual
         if polarity > 0.1:
             return "Positive"
         elif polarity < -0.1:
@@ -418,75 +350,56 @@ def get_mood_from_lyrics(sentiment: Dict) -> str:
 def calculate_lyrics_weight(sentiment: Dict) -> float:
     """
     Calculate how much weight lyrics should have in mood prediction.
-    
-    Strongly emotional lyrics get more weight.
-    
-    Args:
-        sentiment: Sentiment dictionary
-        
-    Returns:
-        Weight value between 0.0 and 1.0
     """
     polarity = abs(sentiment.get('polarity', 0.0))
     subjectivity = sentiment.get('subjectivity', 0.0)
-    
-    # Strong sentiment + high subjectivity = high weight
     strength = (polarity * 0.7) + (subjectivity * 0.3)
-    
-    # Scale to 0.2-0.8 range
     weight = 0.2 + (strength * 0.6)
-    
     return min(weight, 0.8)
 
 
 def get_sentiment_strength(sentiment: Dict) -> float:
     """
     Calculate overall sentiment strength for adaptive fusion weighting.
-    Used by model_service.py for genre-specific weighting.
-    
-    Args:
-        sentiment: Sentiment dictionary with polarity and subjectivity
-        
-    Returns:
-        Strength value between 0.0 and 1.0
     """
     polarity = abs(sentiment.get('polarity', 0.0))
     subjectivity = sentiment.get('subjectivity', 0.0)
-    
-    # Combine polarity magnitude with subjectivity
-    strength = (polarity * subjectivity)
-    
-    return min(strength, 1.0)
+    return min(polarity * subjectivity, 1.0)
 
 
-# Utility functions for testing
+# ============================================================
+# Testing
+# ============================================================
 
 async def test_lyrics_service():
     """
     Test the lyrics service with sample tracks.
     """
-    print("\n" + "="*60)
-    print("🧪 Testing Lyrics Service")
-    print("="*60)
-    
+    print("\n" + "=" * 60)
+    print("🧪 Testing Lyrics Service (with Gemini Fallback)")
+    print("=" * 60)
+
     test_tracks = [
         {"name": "Happy", "artist": "Pharrell Williams"},
         {"name": "Someone Like You", "artist": "Adele"},
-        {"name": "Stairway to Heaven", "artist": "Led Zeppelin"},
+        {"name": "Nonexistent Song", "artist": "Unknown Artist"},  # To test fallback
     ]
-    
+
     for track in test_tracks:
         print(f"\n🔍 Testing: {track['name']} by {track['artist']}")
         sentiment = await get_lyrics_sentiment(track['name'], track['artist'])
-        
         print(f"   Polarity: {sentiment['polarity']:.3f}")
         print(f"   Subjectivity: {sentiment['subjectivity']:.3f}")
         print(f"   Language: {sentiment.get('language', 'unknown')}")
         print(f"   Translated: {sentiment.get('translated', False)}")
         print(f"   Lyrics found: {sentiment.get('lyrics_found', False)}")
+        if sentiment.get("gemini_fallback"):
+            print("   ⚡ Gemini Fallback Used")
         print(f"   Mood: {get_mood_from_lyrics(sentiment)}")
         print(f"   Weight: {calculate_lyrics_weight(sentiment):.3f}")
         print(f"   Strength: {get_sentiment_strength(sentiment):.3f}")
+
+    print("\n✅ Testing complete!")
 
 
 if __name__ == "__main__":

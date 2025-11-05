@@ -1,5 +1,5 @@
 """
-Updated Moodify-AI ML Service - Hybrid Approach
+Updated MoodiQ-AI ML Service - Hybrid Approach
 Uses: Spotify API (OAuth) + YTMusicAPI + MusicBrainz + AcousticBrainz + Last.fm
 
 UPDATED: Added proper exception handlers for new Spotify service
@@ -36,7 +36,7 @@ load_dotenv()
 
 # Create FastAPI app
 app = FastAPI(
-    title="Moodify-AI ML Service (Hybrid Edition)",
+    title="MoodiQ-AI ML Service (Hybrid Edition)",
     description="ML service using Spotify API (OAuth) + Multi-API stack for comprehensive music analysis",
     version="2.5.1",  # Updated version
     docs_url="/docs",
@@ -129,7 +129,7 @@ async def spotify_service_error_handler(request, exc):
 async def startup_event():
     """Initialize services on startup"""
     print("=" * 80)
-    print("🚀 Starting Moodify-AI ML Service v2.5.1 (HYBRID Edition)")
+    print("🚀 Starting MoodiQ-AI ML Service v2.5.1 (HYBRID Edition)")
     print("=" * 80)
     print(f"📅 Startup time: {datetime.utcnow().isoformat()}")
     
@@ -156,20 +156,15 @@ async def startup_event():
     music_service.init_ytmusic()
     
     # Initialize Spotify service (server credentials)
-    try:
-        spotify_client_id = os.getenv("SPOTIFY_CLIENT_ID")
-        spotify_client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
-        
-        if spotify_client_id and spotify_client_secret:
-            # Test Spotify server credentials
-            spotify_service.get_spotify_client()
-            print("✅ Spotify service initialized (server credentials)")
-            print("   Features: Full pagination, rate limiting, custom exceptions")
-        else:
-            print("⚠️ Spotify credentials not configured")
-            print("   Service will use user OAuth tokens only")
-    except Exception as e:
-        print(f"⚠️ Spotify initialization warning: {e}")
+    # Check Spotify configuration (initialization is lazy)
+    spotify_client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    spotify_client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    
+    if spotify_client_id and spotify_client_secret:
+        print("✅ Spotify service configured (server credentials)")
+        print("   Features: Full pagination, rate limiting, custom exceptions")
+    else:
+        print("⚠️ Spotify credentials not configured")
         print("   Service will use user OAuth tokens only")
     
     # Check API configurations
@@ -186,9 +181,26 @@ async def startup_event():
     print(f"   MusicBrainz: ✅ Ready")
     print(f"   AcousticBrainz: ✅ Ready")
     
-    print("\n🎯 Recommendations & Discovery:")
-    print(f"   Last.fm: {'✅ Configured' if music_service.LASTFM_API_KEY else '❌ Not configured'}")
+    # Check Gemini API
+    gemini_key = os.getenv('GEMINI_API_KEY')
+    print(f"   Gemini AI: {'✅ Configured' if gemini_key else '❌ Not configured'}")
+    if gemini_key:
+        print(f"      - AI-powered feature estimation enabled")
+        print(f"      - Key: {gemini_key[:8]}..." if gemini_key else "")
+    else:
+        print(f"      ⚠️  Set GEMINI_API_KEY to enable AI fallback for audio features")
     
+    print("\n🎯 Recommendations & Discovery:")
+    # Check Last.fm with both variable names
+    lastfm_key = os.getenv("LASTFM_API_KEY") or os.getenv("API_KEY_LASTFM")
+    lastfm_configured = bool(lastfm_key)
+    print(f"   Last.fm: {'✅ Configured' if lastfm_configured else '❌ Not configured'}")
+    if lastfm_configured:
+        print(f"      - Recommendations enabled")
+        print(f"      - Similar tracks/artists enabled")
+    else:
+        print(f"      ⚠️  Set LASTFM_API_KEY or API_KEY_LASTFM to enable Last.fm features")
+
     print("\n📝 Lyrics & Sentiment:")
     print(f"   Genius API: {'✅ Configured' if os.getenv('GENIUS_API_KEY') else '❌ Not configured'}")
     
@@ -199,7 +211,7 @@ async def startup_event():
     print("   ✅ Graceful degradation")
     
     print("\n" + "=" * 80)
-    print("✅ Moodify-AI ML Service v2.5.1 Ready!")
+    print("✅ MoodiQ-AI ML Service v2.5.1 Ready!")
     print("=" * 80)
     print("\n🎯 HYBRID API Architecture:")
     print("\n   📊 METADATA & USER DATA (Spotify API via OAuth):")
@@ -249,7 +261,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
-    print("\n👋 Shutting down Moodify-AI ML Service...")
+    print("\n👋 Shutting down MoodiQ-AI ML Service...")
     
     try:
         await cache_service.disconnect_redis()
@@ -303,7 +315,7 @@ app.include_router(
 def read_root():
     """Root endpoint with service information"""
     return {
-        "service": "Moodify-AI ML Service",
+        "service": "MoodiQ-AI ML Service",
         "version": "2.5.1",
         "approach": "hybrid",
         "status": "running",
@@ -539,7 +551,7 @@ async def get_service_stats():
 async def get_api_info():
     """Get detailed API integration information"""
     return {
-        "service": "Moodify-AI ML Service v2.5.1",
+        "service": "MoodiQ-AI ML Service v2.5.1",
         "approach": "HYBRID",
         "description": "Combines Spotify API (OAuth) with Multi-API stack for comprehensive music analysis",
         
@@ -752,7 +764,7 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     
     print("\n" + "=" * 80)
-    print("🚀 Starting Moodify-AI ML Service v2.5.1 (HYBRID Edition)")
+    print("🚀 Starting MoodiQ-AI ML Service v2.5.1 (HYBRID Edition)")
     print("=" * 80)
     print(f"📍 Host: {host}")
     print(f"🔌 Port: {port}")

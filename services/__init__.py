@@ -1,5 +1,5 @@
 """
-Services package for Moodify-AI ML Service.
+Services package for MoodiQ-AI ML Service.
 
 This package provides core services:
 - cache_service: Redis caching
@@ -15,6 +15,7 @@ from . import model_service
 from . import spotify_service
 from . import nlp_service
 from . import music_service
+from . import gemini_service
 
 __all__ = [
     'cache_service',
@@ -22,5 +23,6 @@ __all__ = [
     'model_service',
     'spotify_service',
     'music_service',
+    'gemini_service',
     'nlp_service'
 ]

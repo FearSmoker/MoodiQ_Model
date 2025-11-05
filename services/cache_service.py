@@ -1,5 +1,5 @@
 """
-Redis caching service for Moodify-AI ML Service.
+Redis caching service for MoodiQ-AI ML Service.
 
 Provides caching for:
 - Audio features

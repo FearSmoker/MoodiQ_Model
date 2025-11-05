@@ -1,7 +1,6 @@
 """
-Updated Generate Router - Hybrid Approach
-Uses Spotify API for: user data, top tracks
-Uses Last.fm for: recommendations, similar artists
+Updated Generate Router - COMPLETE VERSION
+All endpoints preserved with proper mood mapping
 """
 
 from fastapi import APIRouter, HTTPException, Header
@@ -13,20 +12,20 @@ router = APIRouter()
 
 
 class GeneratePlaylistRequest(BaseModel):
-    target_mood: str  # "Happy", "Sad", "Calm", "Energetic"
+    target_mood: str
     user_id: str
     seed_track_name: Optional[str] = None
     seed_artist_name: Optional[str] = None
-    seed_track_id: Optional[str] = None  # NEW: Spotify track ID
+    seed_track_id: Optional[str] = None
     limit: int = 20
 
 
 class GenerateActivityRequest(BaseModel):
-    activity: str  # "study", "workout", "party", "sleep", "work", "meditation"
+    activity: str
     user_id: str
     seed_track_name: Optional[str] = None
     seed_artist_name: Optional[str] = None
-    seed_track_id: Optional[str] = None  # NEW: Spotify track ID
+    seed_track_id: Optional[str] = None
     limit: int = 20
 
 
@@ -41,28 +40,21 @@ async def generate_mood_playlist(
 ):
     """
     Generate playlist for target mood (HYBRID APPROACH)
-    
-    Uses:
-    - Spotify API: If seed_track_id provided, get track info
-    - Last.fm: Get recommendations based on seed
-    - Multi-API: Audio features and mood prediction
+    NOW WITH MOOD MAPPING - Handles ANY mood request
     """
     try:
-        print(f"🎯 Generating {request.target_mood} playlist")
+        # Map external mood to base mood
+        base_mood = model_service.map_external_mood_to_base(request.target_mood)
         
-        # Validate mood
-        valid_moods = ["Happy", "Sad", "Calm", "Energetic"]
-        if request.target_mood not in valid_moods:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid mood. Choose from: {', '.join(valid_moods)}"
-            )
+        print(f"🎯 Generating playlist")
+        print(f"   Requested mood: {request.target_mood}")
+        print(f"   Base mood: {base_mood}")
         
         # Determine seed track
         seed_track_name = request.seed_track_name
         seed_artist_name = request.seed_artist_name
         
-        # If Spotify track ID provided and authorization available, get track info from Spotify
+        # If Spotify track ID provided, get track info from Spotify
         if request.seed_track_id and authorization and authorization.startswith('Bearer '):
             try:
                 access_token = authorization.replace('Bearer ', '')
@@ -75,7 +67,7 @@ async def generate_mood_playlist(
             except Exception as e:
                 print(f"⚠️ Could not get Spotify track info: {e}")
         
-        # If still no seed, use defaults based on mood
+        # If still no seed, use defaults based on BASE mood
         if not seed_track_name or not seed_artist_name:
             mood_seeds = {
                 "Happy": ("Happy", "Pharrell Williams"),
@@ -83,7 +75,7 @@ async def generate_mood_playlist(
                 "Calm": ("Weightless", "Marconi Union"),
                 "Energetic": ("Eye of the Tiger", "Survivor")
             }
-            seed_track_name, seed_artist_name = mood_seeds[request.target_mood]
+            seed_track_name, seed_artist_name = mood_seeds[base_mood]
         
         print(f"🌱 Using seed: {seed_track_name} by {seed_artist_name}")
         
@@ -91,7 +83,7 @@ async def generate_mood_playlist(
         recommendations = await music_service.get_recommendations(
             seed_track_name=seed_track_name,
             seed_artist_name=seed_artist_name,
-            target_mood=request.target_mood,
+            target_mood=base_mood,  # Use base mood for filtering
             limit=request.limit * 2  # Get more for filtering
         )
         
@@ -128,8 +120,8 @@ async def generate_mood_playlist(
                     genre=None
                 )
                 
-                # Check if matches target mood
-                if mood_data['fused_mood'] == request.target_mood:
+                # Check if matches target BASE mood
+                if mood_data['fused_mood'] == base_mood:
                     track['predicted_mood'] = mood_data['fused_mood']
                     track['confidence'] = mood_data['confidence']
                     track['mood_details'] = mood_data
@@ -146,18 +138,18 @@ async def generate_mood_playlist(
             print("⚠️ No exact mood matches, returning closest matches")
             filtered_tracks = recommendations[:request.limit]
         
-        print(f"✅ Filtered to {len(filtered_tracks)} tracks matching {request.target_mood}")
+        print(f"✅ Filtered to {len(filtered_tracks)} tracks matching {base_mood}")
         
         # Optimize flow if we have enough tracks
         if len(filtered_tracks) > 2:
             mood_profiles = {
-                "Happy": {"valence": 0.8, "energy": 0.7},
-                "Sad": {"valence": 0.2, "energy": 0.3},
-                "Calm": {"valence": 0.5, "energy": 0.3},
-                "Energetic": {"valence": 0.7, "energy": 0.9}
+                "Happy": {"valence": 0.8, "energy": 0.7, "danceability": 0.7},
+                "Sad": {"valence": 0.2, "energy": 0.3, "danceability": 0.3},
+                "Calm": {"valence": 0.5, "energy": 0.3, "danceability": 0.4},
+                "Energetic": {"valence": 0.7, "energy": 0.9, "danceability": 0.8}
             }
             
-            target_profile = mood_profiles[request.target_mood]
+            target_profile = mood_profiles[base_mood]
             
             optimization = model_service.optimize_flow_dp(
                 filtered_tracks,
@@ -172,7 +164,9 @@ async def generate_mood_playlist(
             flow_score = 1.0
         
         return {
-            "target_mood": request.target_mood,
+            "requested_mood": request.target_mood,
+            "target_mood": base_mood,
+            "mood_mapped": request.target_mood.lower() != base_mood.lower(),
             "tracks": ordered_tracks,
             "total": len(ordered_tracks),
             "flow_score": flow_score,
@@ -214,6 +208,10 @@ async def generate_activity_playlist(
                 "mood": "Energetic",
                 "seed": ("Stronger", "Kanye West")
             },
+            "gym": {
+                "mood": "Energetic",
+                "seed": ("Stronger", "Kanye West")
+            },
             "party": {
                 "mood": "Happy",
                 "seed": ("Uptown Funk", "Mark Ronson")
@@ -229,6 +227,22 @@ async def generate_activity_playlist(
             "work": {
                 "mood": "Calm",
                 "seed": ("Lofi Hip Hop", "Various Artists")
+            },
+            "focus": {
+                "mood": "Calm",
+                "seed": ("Clair de Lune", "Claude Debussy")
+            },
+            "driving": {
+                "mood": "Energetic",
+                "seed": ("Life is a Highway", "Tom Cochrane")
+            },
+            "relax": {
+                "mood": "Calm",
+                "seed": ("Weightless", "Marconi Union")
+            },
+            "chill": {
+                "mood": "Calm",
+                "seed": ("Weightless", "Marconi Union")
             }
         }
         
@@ -269,7 +283,7 @@ async def generate_activity_playlist(
 
 
 # ============================================
-# SPOTIFY-BASED GENERATION (NEW)
+# SPOTIFY-BASED GENERATION (HYBRID)
 # ============================================
 
 @router.post("/spotify/from-top-tracks")
@@ -291,9 +305,15 @@ async def generate_from_spotify_top_tracks(
         
         access_token = authorization.replace('Bearer ', '')
         user_id = request.get('user_id')
-        target_mood = request.get('target_mood')
+        target_mood_raw = request.get('target_mood')
         limit = request.get('limit', 20)
         time_range = request.get('time_range', 'medium_term')  # short_term, medium_term, long_term
+        
+        # Map target mood to base mood if provided
+        target_mood = None
+        if target_mood_raw:
+            target_mood = model_service.map_external_mood_to_base(target_mood_raw)
+            print(f"🎯 Target mood: {target_mood_raw} → {target_mood}")
         
         print(f"🎵 Generating playlist from user's top tracks")
         
@@ -390,6 +410,7 @@ async def generate_from_spotify_top_tracks(
             ],
             "tracks": analyzed_tracks,
             "total": len(analyzed_tracks),
+            "requested_mood": target_mood_raw,
             "target_mood": target_mood,
             "approach": "hybrid"
         }
@@ -420,8 +441,13 @@ async def generate_from_recently_played(
         
         access_token = authorization.replace('Bearer ', '')
         user_id = request.get('user_id')
-        target_mood = request.get('target_mood')
+        target_mood_raw = request.get('target_mood')
         limit = request.get('limit', 20)
+        
+        # Map target mood
+        target_mood = None
+        if target_mood_raw:
+            target_mood = model_service.map_external_mood_to_base(target_mood_raw)
         
         print(f"⏮️ Generating playlist from recently played tracks")
         
@@ -499,6 +525,7 @@ async def generate_from_recently_played(
             },
             "tracks": analyzed_tracks,
             "total": len(analyzed_tracks),
+            "requested_mood": target_mood_raw,
             "target_mood": target_mood,
             "approach": "hybrid"
         }
@@ -669,8 +696,11 @@ async def health_check():
             "Personalized playlists (user feedback)",
             "Spotify top tracks integration",
             "Spotify recently played integration",
-            "Flow optimization (Dynamic Programming)"
+            "Flow optimization (Dynamic Programming)",
+            "External mood mapping (ANY mood → 4 base moods)"
         ],
+        "supported_base_moods": model_service.MOOD_CLASSES,
+        "mood_mapping_enabled": True,
         "data_sources": {
             "recommendations": "Last.fm",
             "user_data": "Spotify API",

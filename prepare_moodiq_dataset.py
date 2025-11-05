@@ -1,7 +1,7 @@
 """
-Prepare Moodify Dataset for Model Training
+Prepare MoodiQ Dataset for Model Training
 ------------------------------------------
-Converts the downloaded Moodify dataset to match the format expected by train_mood_model.py
+Converts the downloaded MoodiQ dataset to match the format expected by train_mood_model.py
 
 Required columns in output:
 - valence, energy, danceability, acousticness, instrumentalness, speechiness
@@ -9,7 +9,7 @@ Required columns in output:
 - mood (one of: Happy, Sad, Calm, Energetic, Angry, Focus)
 
 Usage:
-    python prepare_moodify_dataset.py --input moodify_dataset.csv --output mood_dataset.csv
+    python prepare_MoodiQ_dataset.py --input MoodiQ_dataset.csv --output mood_dataset.csv
 """
 
 import pandas as pd
@@ -27,7 +27,7 @@ REQUIRED_FEATURES = [
 # Target mood classes
 TARGET_MOODS = ["Happy", "Sad", "Calm", "Energetic", "Angry", "Focus"]
 
-# Numeric label mapping for Moodify dataset
+# Numeric label mapping for MoodiQ dataset
 # Based on the dataset: 0=Sad, 1=Happy, 2=Energetic, 3=Calm
 NUMERIC_MOOD_MAPPINGS = {
     0: 'Sad',
@@ -125,7 +125,7 @@ def map_mood(original_mood):
 
 def prepare_dataset(input_path, output_path, max_per_mood=None, balance=True):
     """
-    Load and prepare the Moodify dataset for training.
+    Load and prepare the MoodiQ dataset for training.
     
     Args:
         input_path: Path to input CSV file
@@ -134,13 +134,13 @@ def prepare_dataset(input_path, output_path, max_per_mood=None, balance=True):
         balance: Whether to balance the dataset
     """
     print("=" * 60)
-    print("🎵 Moodify Dataset Preparation")
+    print("🎵 MoodiQ Dataset Preparation")
     print("=" * 60)
     
     # Check if file exists
     if not Path(input_path).exists():
         print(f"❌ File not found: {input_path}")
-        print("\n💡 Please update the path to your downloaded Moodify dataset")
+        print("\n💡 Please update the path to your downloaded MoodiQ dataset")
         return
     
     # Load dataset
@@ -294,13 +294,13 @@ def prepare_dataset(input_path, output_path, max_per_mood=None, balance=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare Moodify dataset for mood classification training"
+        description="Prepare MoodiQ dataset for mood classification training"
     )
     parser.add_argument(
         '--input', 
         type=str, 
-        default='moodify_dataset.csv',
-        help='Path to input Moodify dataset CSV'
+        default='MoodiQ_dataset.csv',
+        help='Path to input MoodiQ dataset CSV'
     )
     parser.add_argument(
         '--output', 
