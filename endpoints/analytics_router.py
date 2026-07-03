@@ -21,80 +21,110 @@ async def get_mood_timeline(user_id: str, days: int = 7):
     try:
         print(f"📊 Generating mood timeline for user {user_id} (last {days} days)")
         
-        # Get all user's cached mood predictions
-        pattern = f"track:mood:*:{user_id}"
-        keys = await cache_service.get_keys_by_pattern(pattern, limit=1000)
+        since_ms = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
         
-        if not keys:
-            return {
-                "user_id": user_id,
-                "period_days": days,
-                "timeline": [],
-                "total_tracked": 0,
-                "message": "No mood history found for this user"
-            }
+        # --- Primary: read from sorted-set history (real timestamps) ---
+        raw_entries = await cache_service.zrange_history(user_id, since_ms=since_ms, limit=500)
         
         mood_history = []
         
-        for key in keys:
-            try:
-                data = await cache_service.get_from_cache(key)
-                if not data or not isinstance(data, dict):
-                    continue
-                
-                # Get TTL for timestamp estimation
-                ttl = await cache_service.get_ttl(key)
-                if ttl > 0:
-                    timestamp = datetime.now() - timedelta(seconds=(3600 - ttl))
-                else:
-                    timestamp = datetime.now()
-                
-                mood_data = data.get('mood', {})
-                
-                # Handle both old (single) and new (multi) mood formats
-                primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Relaxed')
-                all_moods = mood_data.get('all_moods', [primary_mood])
-                mood_scores = mood_data.get('mood_scores', {primary_mood: mood_data.get('confidence', 0.5)})
-                
+        if raw_entries:
+            for entry in raw_entries:
+                ts_ms = entry.get('_ts', int(datetime.now().timestamp() * 1000))
+                timestamp = datetime.utcfromtimestamp(ts_ms / 1000)
+                mood_val = entry.get('mood', 'Unknown')
+                features = entry.get('features', {})
                 mood_history.append({
-                    "primary_mood": primary_mood,
-                    "all_moods": all_moods,
-                    "mood_scores": mood_scores,
+                    "primary_mood": mood_val,
+                    "all_moods": [mood_val],
+                    "mood_scores": {mood_val: entry.get('confidence', 0.5)},
                     "timestamp": timestamp.isoformat(),
-                    "track_name": data.get('track_name', 'Unknown'),
-                    "artist_name": data.get('artist_name', 'Unknown'),
-                    "confidence": mood_data.get('confidence', 0.0)
+                    "track_name": entry.get('track_name', 'Unknown'),
+                    "artist_name": entry.get('artist_name', 'Unknown'),
+                    "confidence": entry.get('confidence', 0.0),
+                    "features": features,
                 })
-                
-            except Exception as e:
-                print(f"⚠️ Error processing cache entry: {e}")
-                continue
+        else:
+            # --- Fallback: old pattern-scan (TTL-estimated timestamps) ---
+            print(f"⚠️ No sorted-set history for {user_id}, falling back to key scan")
+            pattern = f"track:mood:*:{user_id}"
+            keys = await cache_service.get_keys_by_pattern(pattern, limit=500)
+            
+            if not keys:
+                return {
+                    "user_id": user_id,
+                    "period_days": days,
+                    "timeline": [],
+                    "total_tracked": 0,
+                    "message": "No mood history found. Listen to music while the app is running!"
+                }
+            
+            for key in keys:
+                try:
+                    data = await cache_service.get_from_cache(key)
+                    if not data or not isinstance(data, dict):
+                        continue
+                    ttl = await cache_service.get_ttl(key)
+                    # Better estimate: 86400s total TTL, so elapsed = 86400 - ttl
+                    elapsed = max(0, 86400 - ttl) if ttl > 0 else 0
+                    timestamp = datetime.now() - timedelta(seconds=elapsed)
+                    mood_data = data.get('mood', {})
+                    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Unknown')
+                    all_moods = mood_data.get('all_moods', [primary_mood])
+                    mood_scores = mood_data.get('mood_scores', {primary_mood: mood_data.get('confidence', 0.5)})
+                    mood_history.append({
+                        "primary_mood": primary_mood,
+                        "all_moods": all_moods,
+                        "mood_scores": mood_scores,
+                        "timestamp": timestamp.isoformat(),
+                        "track_name": data.get('track_name', 'Unknown'),
+                        "artist_name": data.get('artist_name', 'Unknown'),
+                        "confidence": mood_data.get('confidence', 0.0),
+                        "features": data.get('features', {}),
+                    })
+                except Exception as e:
+                    print(f"⚠️ Error processing cache entry: {e}")
+                    continue
         
         print(f"✅ Found {len(mood_history)} mood entries")
         
-        # Aggregate by day - NOW WITH 12 MOODS
+        # Check unique days
+        unique_days = {entry['timestamp'][:10] for entry in mood_history}
+        group_by_time = len(unique_days) <= 1
+        
+        # Aggregate by day or time - NOW WITH 12 MOODS
         daily_moods = defaultdict(lambda: {mood: 0 for mood in model_service.ALL_MOOD_LABELS})
         daily_tracks = defaultdict(list)
         
         for entry in mood_history:
-            date = entry['timestamp'][:10]  # YYYY-MM-DD
+            if group_by_time:
+                try:
+                    # Parse timestamp and format to local time string like "10:39 PM"
+                    dt = datetime.fromisoformat(entry['timestamp'].replace('Z', '+00:00'))
+                    date_key = dt.strftime("%I:%M %p")
+                except Exception as e:
+                    print(f"⚠️ Timestamp formatting failed: {e}")
+                    date_key = entry['timestamp'][11:16] # Fallback to HH:MM
+            else:
+                date_key = entry['timestamp'][:10]  # YYYY-MM-DD
             
             # Count all moods for this track (multi-tag support)
             for mood in entry['all_moods']:
-                if mood in daily_moods[date]:
-                    daily_moods[date][mood] += 1
+                if mood in daily_moods[date_key]:
+                    daily_moods[date_key][mood] += 1
             
-            daily_tracks[date].append({
+            daily_tracks[date_key].append({
                 "track": entry['track_name'],
                 "artist": entry['artist_name'],
                 "mood": entry['primary_mood'],
                 "all_moods": entry['all_moods'],
-                "confidence": entry['confidence']
+                "confidence": entry['confidence'],
+                "features": entry.get('features', {})
             })
         
         # Build timeline
         timeline = []
-        for date, moods in sorted(daily_moods.items()):
+        for date_key, moods in sorted(daily_moods.items()):
             total = sum(moods.values())
             
             if total == 0:
@@ -108,16 +138,16 @@ async def get_mood_timeline(user_id: str, days: int = 7):
             }
             
             # Get dominant mood
-            dominant_mood = max(moods, key=moods.get) if moods else 'Relaxed'
+            dominant_mood = max(moods, key=moods.get) if moods else 'Unknown'
             
             timeline.append({
-                "date": date,
+                "date": date_key,
                 "moods": mood_percentages,
-                "total_tracks": len(daily_tracks[date]),
+                "total_tracks": len(daily_tracks[date_key]),
                 "total_mood_tags": total,
                 "dominant_mood": dominant_mood,
                 "mood_diversity": len([m for m, c in moods.items() if c > 0]),
-                "tracks": daily_tracks[date]
+                "tracks": daily_tracks[date_key]
             })
         
         # Calculate overall statistics
@@ -197,7 +227,7 @@ async def get_mood_distribution(user_id: str):
                 mood_scores = mood_data.get('mood_scores', {})
                 
                 if not all_moods:
-                    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Relaxed')
+                    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Unknown')
                     all_moods = [primary_mood]
                     mood_scores = {primary_mood: mood_data.get('confidence', 0.5)}
                 
@@ -427,7 +457,7 @@ async def get_global_mood_trends(limit: int = 100):
                 all_moods = mood_data.get('all_moods', [])
                 
                 if not all_moods:
-                    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Relaxed')
+                    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Unknown')
                     all_moods = [primary_mood]
                 
                 for mood in all_moods:

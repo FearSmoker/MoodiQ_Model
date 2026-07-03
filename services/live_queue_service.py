@@ -1,298 +1,213 @@
-"""
-Live Listening Queue Service
-=============================
-Real-time mood tracking using Redis for live playback sessions
-"""
-
+import os
+import uuid
 import json
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
-from . import cache_service
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+import numpy as np
+from . import cache_service, model_service
 
+# MongoDB connection for archiving sessions
+import motor.motor_asyncio
 
 class LiveQueueService:
-    """
-    Manages live listening queues with real-time mood analytics
-    """
-    
-    # Session configuration
-    SESSION_TIMEOUT = 300  # 5 minutes in seconds
-    MAX_QUEUE_SIZE = 100   # Maximum tracks in queue
-    
-    @staticmethod
-    def _get_queue_key(user_id: str, session_id: str) -> str:
-        """Generate Redis key for live queue"""
-        return f"live_queue:{user_id}:{session_id}"
-    
-    @staticmethod
-    def _get_session_key(user_id: str) -> str:
-        """Generate Redis key for active session"""
-        return f"live_session:{user_id}:active"
-    
+    def __init__(self):
+        self.mongo_client = None
+        self.db = None
+        self.collection = None
+        self.memory_cache = {}  # In-memory fallback cache to ensure functionality if Redis is offline/uninitialized
+
+    async def _init_db(self):
+        if self.mongo_client:
+            return
+        mongo_uri = os.getenv("MONGO_URI")
+        if mongo_uri:
+            try:
+                self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
+                self.db = self.mongo_client.get_default_database()
+                self.collection = self.db['moodanalytics']
+            except Exception as e:
+                print(f"⚠️ Failed to connect MongoDB in LiveQueueService: {e}")
+
     async def start_session(self, user_id: str) -> str:
-        """
-        Start a new live listening session
-        
-        Args:
-            user_id: User identifier
-            
-        Returns:
-            Session ID
-        """
-        # Generate session ID
-        session_id = f"session_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-        
+        session_id = str(uuid.uuid4())
+        session_key = f"live_session:{user_id}"
         session_data = {
-            'session_id': session_id,
-            'user_id': user_id,
-            'started_at': datetime.utcnow().isoformat(),
-            'track_count': 0,
-            'last_activity': datetime.utcnow().isoformat()
+            "session_id": session_id,
+            "user_id": user_id,
+            "started_at": datetime.utcnow().isoformat(),
+            "last_activity": datetime.utcnow().isoformat(),
+            "active": True
         }
-        
-        # Store active session
-        session_key = self._get_session_key(user_id)
-        await cache_service.set_in_cache(
-            session_key,
-            session_data,
-            expiration=self.SESSION_TIMEOUT
-        )
+        await cache_service.set_in_cache(session_key, session_data, expiration=3600)
+        self.memory_cache[session_key] = session_data
         
         # Initialize empty queue
-        queue_key = self._get_queue_key(user_id, session_id)
-        await cache_service.set_in_cache(
-            queue_key,
-            {'tracks': [], 'session': session_data, 'current_mood': None, 'aggregated_features': {}},
-            expiration=self.SESSION_TIMEOUT
-        )
+        queue_key = f"live_queue:{user_id}:{session_id}"
+        queue_data = {"tracks": []}
+        await cache_service.set_in_cache(queue_key, queue_data, expiration=3600)
+        self.memory_cache[queue_key] = queue_data
         
-        print(f"🎧 Started live session {session_id} for user {user_id}")
         return session_id
-    
-    async def add_track_to_queue(
-        self,
-        user_id: str,
-        session_id: str,
-        track_data: Dict
-    ) -> Dict:
-        """
-        Add track to live queue and recalculate aggregate features
-        
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
-            track_data: Track dictionary with features and mood
+
+    async def get_active_session(self, user_id: str) -> Optional[Dict]:
+        session_key = f"live_session:{user_id}"
+        res = await cache_service.get_from_cache(session_key)
+        if res:
+            return res
+        return self.memory_cache.get(session_key)
+
+    async def get_current_queue(self, user_id: str, session_id: str) -> Optional[Dict]:
+        queue_key = f"live_queue:{user_id}:{session_id}"
+        res = await cache_service.get_from_cache(queue_key)
+        if res:
+            return res
+        return self.memory_cache.get(queue_key)
+
+    async def add_track_to_queue(self, user_id: str, session_id: str, track_data: Dict) -> Dict:
+        # Check active session, renew if missing
+        session = await self.get_active_session(user_id)
+        if not session or session.get("session_id") != session_id:
+            session_id = await self.start_session(user_id)
+            session = await self.get_active_session(user_id)
             
-        Returns:
-            Updated queue analytics
-        """
-        queue_key = self._get_queue_key(user_id, session_id)
-        session_key = self._get_session_key(user_id)
+        # Update last activity
+        session["last_activity"] = datetime.utcnow().isoformat()
+        session_key = f"live_session:{user_id}"
+        await cache_service.set_in_cache(session_key, session, expiration=3600)
+        self.memory_cache[session_key] = session
         
         # Get current queue
-        queue_data = await cache_service.get_from_cache(queue_key)
-
-        # ✅ Safeguard: handle missing or invalid queue_data gracefully
-        if not isinstance(queue_data, dict):
-            print(f"⚠️  Queue data not found or invalid for session {session_id}, creating fallback queue.")
-            await self.start_session(user_id)
-            queue_data = {'tracks': [], 'session': {}, 'current_mood': None, 'aggregated_features': {}}
-        
-        # Add track to queue
-        tracks = queue_data.get('tracks', [])
-        
-        # Add timestamp
-        track_entry = {
+        queue = await self.get_current_queue(user_id, session_id)
+        if not queue:
+            queue = {"tracks": []}
+            
+        # Add played timestamp to track
+        track_record = {
             **track_data,
-            'played_at': datetime.utcnow().isoformat()
+            "played_at": datetime.utcnow().isoformat()
         }
+        queue["tracks"].append(track_record)
         
-        tracks.append(track_entry)
+        # Save queue
+        queue_key = f"live_queue:{user_id}:{session_id}"
+        await cache_service.set_in_cache(queue_key, queue, expiration=3600)
+        self.memory_cache[queue_key] = queue
         
-        # Limit queue size (keep most recent tracks)
-        if len(tracks) > self.MAX_QUEUE_SIZE:
-            tracks = tracks[-self.MAX_QUEUE_SIZE:]
+        # Calculate queue analytics
+        tracks = queue["tracks"]
+        track_count = len(tracks)
         
-        # Update queue
-        queue_data['tracks'] = tracks
-        
-        # Recalculate aggregated features
-        from .playlist_analyzer import playlist_analyzer
-        aggregated = playlist_analyzer.aggregate_playlist_features(tracks)
-        
-        # Update session activity
-        session_data = queue_data.get('session', {})
-        session_data['last_activity'] = datetime.utcnow().isoformat()
-        session_data['track_count'] = len(tracks)
-        
-        queue_data['session'] = session_data
-        queue_data['aggregated_features'] = aggregated
-        
-        # Calculate current mood
-        from .model_service import model_service
-        mood_data = await model_service.predict_mood_from_features(
-            aggregated,
-            {'polarity': 0.0, 'subjectivity': 0.0},  # No lyrics for aggregate
-            user_id=user_id
-        )
-        
-        queue_data['current_mood'] = {
-            'primary_mood': mood_data['primary_mood'],
-            'all_moods': mood_data['all_moods'],
-            'mood_scores': mood_data['mood_scores'],
-            'confidence': mood_data['confidence']
-        }
-        
-        # Save back to Redis
-        await cache_service.set_in_cache(
-            queue_key,
-            queue_data,
-            expiration=self.SESSION_TIMEOUT
-        )
-        
-        # Update active session
-        await cache_service.set_in_cache(
-            session_key,
-            session_data,
-            expiration=self.SESSION_TIMEOUT
-        )
-        
-        print(f"➕ Added track to queue: {len(tracks)} tracks, mood: {mood_data['primary_mood']}")
+        # Aggregate features and predict queue mood
+        features_list = [t.get("features", {}) for t in tracks if t.get("features")]
+        if features_list:
+            agg_features = {}
+            for feat in model_service.MODEL_FEATURES:
+                vals = [float(f.get(feat, 0.5)) for f in features_list if f.get(feat) is not None]
+                agg_features[feat] = float(np.mean(vals)) if vals else 0.5
+                
+            pred = model_service.predict_mood_single_track(agg_features)
+            current_mood = {
+                "primary_mood": pred["primary_mood"],
+                "all_moods": pred["all_moods"],
+                "mood_scores": pred["mood_scores"],
+                "confidence": pred["confidence"]
+            }
+        else:
+            agg_features = {}
+            current_mood = {
+                "primary_mood": "Relaxed",
+                "all_moods": ["Relaxed"],
+                "mood_scores": {"Relaxed": 1.0},
+                "confidence": 1.0
+            }
+            
+        queue["current_mood"] = current_mood
+        queue["aggregated_features"] = agg_features
+        await cache_service.set_in_cache(queue_key, queue, expiration=3600)
+        self.memory_cache[queue_key] = queue
         
         return {
-            'session_id': session_id,
-            'track_count': len(tracks),
-            'aggregated_features': aggregated,
-            'current_mood': queue_data['current_mood'],
-            'last_track': track_entry.get('name', 'Unknown')
+            "session_id": session_id,
+            "track_count": track_count,
+            "current_mood": current_mood,
+            "aggregated_features": agg_features
         }
-    
-    async def get_current_queue(self, user_id: str, session_id: str) -> Optional[Dict]:
-        """
-        Get current live queue analytics
-        
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
-            
-        Returns:
-            Queue data with analytics
-        """
-        queue_key = self._get_queue_key(user_id, session_id)
-        return await cache_service.get_from_cache(queue_key)
-    
-    async def get_active_session(self, user_id: str) -> Optional[Dict]:
-        """
-        Get user's active session if exists
-        
-        Args:
-            user_id: User identifier
-            
-        Returns:
-            Active session data or None
-        """
-        session_key = self._get_session_key(user_id)
-        return await cache_service.get_from_cache(session_key)
-    
+
     async def end_session(self, user_id: str, session_id: str) -> Dict:
-        """
-        End live session and save to MongoDB
+        session_key = f"live_session:{user_id}"
+        queue_key = f"live_queue:{user_id}:{session_id}"
         
-        Args:
-            user_id: User identifier
-            session_id: Session identifier
+        session = await self.get_active_session(user_id)
+        queue = await self.get_current_queue(user_id, session_id)
+        
+        if not session or session.get("session_id") != session_id or not queue:
+            return {"error": "Session not found or already ended"}
             
-        Returns:
-            Final session analytics
-        """
-        queue_key = self._get_queue_key(user_id, session_id)
-        queue_data = await cache_service.get_from_cache(queue_key)
+        tracks = queue.get("tracks", [])
+        track_count = len(tracks)
         
-        if not queue_data:
-            return {'error': 'Session not found'}
+        # Calculate duration
+        started_at = datetime.fromisoformat(session["started_at"])
+        duration_sec = (datetime.utcnow() - started_at).total_seconds()
+        duration_min = round(max(0.1, duration_sec / 60.0), 2)
         
-        tracks = queue_data.get('tracks', [])
+        current_mood = queue.get("current_mood", {
+            "primary_mood": "Relaxed",
+            "all_moods": ["Relaxed"],
+            "mood_scores": {"Relaxed": 1.0},
+            "confidence": 1.0
+        })
         
-        if not tracks:
-            return {'error': 'No tracks in session'}
+        # Clean up cache
+        await cache_service.delete_from_cache(session_key)
+        await cache_service.delete_from_cache(queue_key)
+        self.memory_cache.pop(session_key, None)
+        self.memory_cache.pop(queue_key, None)
         
-        # Final analytics
-        final_analytics = {
-            'user_id': user_id,
-            'session_id': session_id,
-            'started_at': queue_data['session']['started_at'],
-            'ended_at': datetime.utcnow().isoformat(),
-            'track_count': len(tracks),
-            'aggregated_features': queue_data.get('aggregated_features', {}),
-            'final_mood': queue_data.get('current_mood', {}),
-            'session_duration_minutes': self._calculate_duration(
-                queue_data['session']['started_at'],
-                datetime.utcnow().isoformat()
-            )
+        # Prepare session history record
+        record = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "started_at": session["started_at"],
+            "ended_at": datetime.utcnow().isoformat(),
+            "duration_minutes": duration_min,
+            "track_count": track_count,
+            "final_mood": current_mood,
+            "tracks": tracks,
+            "aggregated_features": queue.get("aggregated_features", {})
         }
         
-        # Save to MongoDB (via motor)
-        try:
-            from motor.motor_asyncio import AsyncIOMotorClient
-            import os
-            
-            mongo_uri = os.getenv('MONGO_URI')
-            if mongo_uri:
-                client = AsyncIOMotorClient(mongo_uri)
-                db = client['moodiq']
-                collection = db['moodanalytics']
+        # Save to MongoDB
+        await self._init_db()
+        if self.collection is not None:
+            try:
+                await self.collection.insert_one(record)
+                if '_id' in record:
+                    del record['_id']
+                print(f"✅ Saved live session history to MongoDB")
+            except Exception as e:
+                print(f"⚠️ Failed to insert session history to MongoDB: {e}")
                 
-                await collection.insert_one(final_analytics)
-                print(f"💾 Saved session analytics to MongoDB")
-        except Exception as e:
-            print(f"⚠️ Failed to save to MongoDB: {e}")
-        
-        # Clean up Redis
-        await cache_service.delete_from_cache(queue_key)
-        session_key = self._get_session_key(user_id)
-        await cache_service.delete_from_cache(session_key)
-        
-        print(f"✅ Ended session {session_id}")
-        
-        return final_analytics
-    
-    @staticmethod
-    def _calculate_duration(start_time: str, end_time: str) -> float:
-        """Calculate duration in minutes"""
-        try:
-            start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-            end = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-            duration = (end - start).total_seconds() / 60.0
-            return round(duration, 2)
-        except:
-            return 0.0
-    
+        return {
+            "session_id": session_id,
+            "user_id": user_id,
+            "started_at": session["started_at"],
+            "session_duration_minutes": duration_min,
+            "track_count": track_count,
+            "final_mood": current_mood
+        }
+
     async def check_and_auto_end_session(self, user_id: str) -> Optional[Dict]:
-        """
-        Check if session should be auto-ended due to inactivity
-        
-        Args:
-            user_id: User identifier
-            
-        Returns:
-            Final analytics if session was ended, None otherwise
-        """
-        session_data = await self.get_active_session(user_id)
-        
-        if not session_data:
+        session = await self.get_active_session(user_id)
+        if not session:
             return None
-        
-        last_activity = datetime.fromisoformat(session_data['last_activity'].replace('Z', '+00:00'))
-        now = datetime.utcnow()
-        inactive_seconds = (now - last_activity).total_seconds()
-        
-        if inactive_seconds >= self.SESSION_TIMEOUT:
-            # Auto-end session
-            print(f"⏰ Auto-ending inactive session for user {user_id}")
-            return await self.end_session(user_id, session_data['session_id'])
-        
+            
+        last_activity = datetime.fromisoformat(session["last_activity"])
+        inactive_sec = (datetime.utcnow() - last_activity).total_seconds()
+        if inactive_sec >= 300:
+            print(f"🕒 Session {session['session_id']} inactive for {inactive_sec}s. Auto-ending...")
+            return await self.end_session(user_id, session["session_id"])
+            
         return None
 
-
-# Global instance
 live_queue_service = LiveQueueService()

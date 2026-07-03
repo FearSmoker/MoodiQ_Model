@@ -36,7 +36,18 @@ FALLBACK_MODEL_NAMES = [
     "gemini-1.5-flash",
     "gemini-2.0-flash",
 ]
+import time
 
+_gemini_cooldown_until = 0.0
+
+def mark_gemini_cooldown(seconds=60):
+    global _gemini_cooldown_until
+    _gemini_cooldown_until = time.time() + seconds
+    print(f"⚠️ Gemini API rate limit hit/quota exhausted. Placing Gemini on cooldown for {seconds} seconds.")
+
+def is_gemini_on_cooldown() -> bool:
+    global _gemini_cooldown_until
+    return time.time() < _gemini_cooldown_until
 
 def _init_gemini():
     """Initialize Gemini API (called lazily on first use)"""
@@ -107,6 +118,10 @@ def _call_gemini_generate(prompt: str) -> Optional[str]:
     global _client
     if not _client:
         return None
+        
+    if is_gemini_on_cooldown():
+        print("⏭️ Gemini is on cooldown due to rate limits/quota exhaustion, skipping API call...")
+        return None
     
     model_chain = [PRIMARY_MODEL_NAME] + [m for m in FALLBACK_MODEL_NAMES if m != PRIMARY_MODEL_NAME]
     
@@ -127,6 +142,11 @@ def _call_gemini_generate(prompt: str) -> Optional[str]:
                 print(f"⚠️ Empty response text from model '{model_name}'")
         except Exception as e:
             last_error = e
+            err_str = str(e).lower()
+            if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
+                mark_gemini_cooldown(60) # Place Gemini on a 60-second cooldown
+                # Since quota is exhausted across all models under the same API key, exit early
+                return None
             print(f"⚠️ Gemini generate_content error with '{model_name}': {e}")
             continue
     

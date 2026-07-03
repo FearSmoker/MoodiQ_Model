@@ -94,21 +94,78 @@ async def generate_mood_playlist(
         base_moods = model_service.EXTENDED_MOODS[extended_mood]["base_moods"]
         primary_base_mood = base_moods[0]  # Use first base mood for filtering
         
-        # Get recommendations from Last.fm
-        recommendations = await music_service.get_recommendations(
-            seed_track_name=seed_track_name,
-            seed_artist_name=seed_artist_name,
-            target_mood=primary_base_mood,  # Use base mood for Last.fm
-            limit=request.limit * 2  # Get more for filtering
-        )
+        recommendations = []
+        spotify_used = False
+        access_token = None  # Initialize so it's always defined
         
+        if authorization and authorization.startswith('Bearer '):
+            access_token = authorization.replace('Bearer ', '')
+            
+            # Find Spotify track ID for seed
+            seed_id = request.seed_track_id
+            if not seed_id and seed_track_name:
+                try:
+                    search_res = await spotify_service.search_tracks(
+                        f"{seed_track_name} {seed_artist_name}",
+                        limit=1,
+                        access_token=access_token
+                    )
+                    if search_res:
+                        seed_id = search_res[0]['id']
+                except Exception as e:
+                    print(f"⚠️ Search failed for seed {seed_track_name}: {e}")
+            
+            if seed_id:
+                try:
+                    print(f"🚀 Fetching Spotify recommendations using seed ID: {seed_id}")
+                    profile = model_service.MOOD_PROFILES.get(extended_mood)
+                    target_valence = sum(profile['valence']) / 2.0 if profile else 0.5
+                    target_energy = sum(profile['energy']) / 2.0 if profile else 0.5
+                    
+                    spotify_recs = await spotify_service.get_recommendations(
+                        seed_tracks=[seed_id],
+                        target_valence=target_valence,
+                        target_energy=target_energy,
+                        limit=request.limit * 3,
+                        access_token=access_token
+                    )
+                    
+                    if spotify_recs:
+                        # Batch get audio features
+                        rec_ids = [r['id'] for r in spotify_recs]
+                        features_list = await spotify_service.get_audio_features(rec_ids, access_token)
+                        
+                        for idx, track in enumerate(spotify_recs):
+                            track_features = features_list[idx] if idx < len(features_list) else None
+                            if track_features:
+                                recommendations.append({
+                                    'name': track['name'],
+                                    'artist': track['artists'][0] if track['artists'] else 'Unknown Artist',
+                                    'features': track_features,
+                                    'id': track['id'],
+                                    'external_url': track['external_url']
+                                })
+                        spotify_used = True
+                        print(f"✅ Found {len(recommendations)} candidate tracks from Spotify Recommendations")
+                except Exception as e:
+                    print(f"⚠️ Spotify recommendations failed, falling back to Last.fm: {e}")
+                    
+        if not spotify_used:
+            print("🔊 Using Last.fm candidate generation...")
+            recommendations = await music_service.get_recommendations(
+                seed_track_name=seed_track_name,
+                seed_artist_name=seed_artist_name,
+                target_mood=primary_base_mood,
+                limit=request.limit * 2,
+                access_token=access_token  # May be None — music_service handles this
+            )
+
+            
         if not recommendations:
             raise HTTPException(
                 status_code=404,
                 detail="No recommendations found. Try a different seed track."
             )
-        
-        print(f"✅ Found {len(recommendations)} candidate tracks from Last.fm")
         
         # Filter and analyze with multi-mood support
         filtered_tracks = []
@@ -233,7 +290,8 @@ async def generate_mood_playlist(
                 "artist": seed_artist_name,
                 "id": request.seed_track_id
             },
-            "source": "lastfm_recommendations",
+            "source": "spotify_recommendations" if spotify_used else "lastfm_recommendations",
+
             "approach": "hybrid_multi_mood",
             "mood_system": "12_extended_moods"
         }
@@ -286,11 +344,11 @@ async def generate_activity_playlist(
             },
             "work": {
                 "mood": "Focused",
-                "seed": ("Lofi Hip Hop", "Various Artists")
+                "seed": ("Music for Airports", "Brian Eno")
             },
             "focus": {
                 "mood": "Focused",
-                "seed": ("Concentration", "Various Artists")
+                "seed": ("Porcelain", "Moby")
             },
             "driving": {
                 "mood": "Excited",

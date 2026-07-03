@@ -1,6 +1,21 @@
 """
 Train Router - 12 Moods Multi-Tag Compatible
 Enhanced user feedback and personalization with extended mood system
+
+Fixes applied:
+- ✅ get_hybrid_recommendations() no longer silently produces "Unknown" mood
+     for every track when Spotify's audio-features endpoint is unavailable
+     (it's deprecated for apps without Extended Quota Mode — see
+     spotify_service.get_audio_features docstring). It now:
+       1. Uses the catalog-search mood tag Spotify's own catalog-fallback
+          already attached to each track (see spotify_service.get_recommendations)
+       2. Falls back to db_recommendation_service (MongoDB vector search) —
+          previously fully built but never called anywhere — to fetch
+          precomputed features/moods for tracks Spotify can't give us
+          features for
+       3. Only falls back to the rule-based _simple_mood_prediction as a last
+          resort, and only when features actually exist
+- ✅ db_recommendation_service is now actually wired up instead of being dead code.
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -9,6 +24,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import asyncio
 from services import cache_service, model_service, spotify_service
+from services.db_recommendation_service import db_recommendation_service
 
 router = APIRouter()
 
@@ -75,13 +91,13 @@ async def submit_mood_feedback(request: FeedbackRequest):
     """
     Accept user feedback for mood predictions.
     NOW SUPPORTS: 12 extended moods + multi-tag feedback
-    
+
     This endpoint is called when users correct mood predictions.
     """
     try:
         print(f"📝 Received feedback from user {request.user_id}: "
               f"Track {request.track_id} -> {request.feedback_mood}")
-        
+
         # Validate mood using extended mood system
         valid_moods = model_service.ALL_MOOD_LABELS + ["Neutral"]
         if request.feedback_mood not in valid_moods:
@@ -89,7 +105,7 @@ async def submit_mood_feedback(request: FeedbackRequest):
                 status_code=400,
                 detail=f"Invalid mood. Must be one of: {', '.join(valid_moods)}"
             )
-        
+
         # Validate multi-mood feedback if provided
         if request.feedback_moods:
             for mood in request.feedback_moods:
@@ -98,17 +114,17 @@ async def submit_mood_feedback(request: FeedbackRequest):
                         status_code=400,
                         detail=f"Invalid mood in multi-tag feedback: {mood}"
                     )
-        
+
         # 1. Immediate cache override for this user
         user_override_key = f"user_model:{request.user_id}:track:{request.track_id}"
-        
+
         # Store primary mood
         await cache_service.set_in_cache(
             user_override_key,
             request.feedback_mood,
             expiration=86400 * 30  # Cache for 30 days
         )
-        
+
         # Store multi-mood feedback if provided
         if request.feedback_moods:
             multi_override_key = f"user_model:{request.user_id}:track:{request.track_id}:multi"
@@ -118,12 +134,12 @@ async def submit_mood_feedback(request: FeedbackRequest):
                 expiration=86400 * 30
             )
             print(f"✅ Multi-mood override: {request.feedback_moods}")
-        
+
         print(f"✅ User override cached: {user_override_key} = {request.feedback_mood}")
-        
+
         # 2. Store in feedback log for batch retraining
         feedback_log_key = f"feedback_log:{request.user_id}:{datetime.utcnow().isoformat()}"
-        
+
         feedback_data = {
             "user_id": request.user_id,
             "track_id": request.track_id,
@@ -132,13 +148,13 @@ async def submit_mood_feedback(request: FeedbackRequest):
             "playlist_id": request.playlist_id,
             "timestamp": request.timestamp or datetime.utcnow().isoformat()
         }
-        
+
         await cache_service.set_in_cache(
             feedback_log_key,
             feedback_data,
             expiration=86400 * 90  # Keep feedback logs for 90 days
         )
-        
+
         # 3. Update user preference statistics (12 moods)
         user_stats_key = f"user_stats:{request.user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {
@@ -148,14 +164,14 @@ async def submit_mood_feedback(request: FeedbackRequest):
             "mood_diversity": 0,
             "multi_tag_feedback_count": 0
         }
-        
+
         user_stats["feedback_count"] += 1
-        
+
         # Count primary mood
         if request.feedback_mood not in user_stats["mood_corrections"]:
             user_stats["mood_corrections"][request.feedback_mood] = 0
         user_stats["mood_corrections"][request.feedback_mood] += 1
-        
+
         # Count multi-mood feedback
         if request.feedback_moods:
             user_stats["multi_tag_feedback_count"] += 1
@@ -163,10 +179,10 @@ async def submit_mood_feedback(request: FeedbackRequest):
                 if mood not in user_stats["mood_corrections"]:
                     user_stats["mood_corrections"][mood] = 0
                 user_stats["mood_corrections"][mood] += 1
-        
+
         # Calculate mood diversity (how many different moods user has corrected to)
         user_stats["mood_diversity"] = len(user_stats["mood_corrections"])
-        
+
         # Track individual corrections (keep last 100)
         user_stats["track_corrections"].append({
             "track_id": request.track_id,
@@ -175,19 +191,19 @@ async def submit_mood_feedback(request: FeedbackRequest):
             "timestamp": request.timestamp or datetime.utcnow().isoformat()
         })
         user_stats["track_corrections"] = user_stats["track_corrections"][-100:]
-        
+
         await cache_service.set_in_cache(
             user_stats_key,
             user_stats,
             expiration=86400 * 365  # Keep user stats for 1 year
         )
-        
+
         print(f"📊 User stats updated: {user_stats['feedback_count']} total feedbacks")
         print(f"🎨 Mood diversity: {user_stats['mood_diversity']} different moods")
-        
+
         # 4. Check if user has enough feedback for auto-retraining suggestion
         suggest_retrain = user_stats["feedback_count"] >= 10 and user_stats["feedback_count"] % 10 == 0
-        
+
         return {
             "success": True,
             "message": "Feedback received and applied",
@@ -201,14 +217,14 @@ async def submit_mood_feedback(request: FeedbackRequest):
             "ready_for_personalization": user_stats["feedback_count"] >= 10,
             "mood_system": "12_extended_moods"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         print(f"❌ Error processing feedback: {e}")
         import traceback
         traceback.print_exc()
-        
+
         return {
             "success": False,
             "message": "Feedback received but could not be fully processed",
@@ -225,18 +241,32 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
     """
     Generate personalized recommendations using hybrid model.
     NOW SUPPORTS: Multi-mood targeting and 12 extended moods
+
+    FIXED: previously every track fell back to primary_mood="Unknown" because
+    Spotify's audio-features endpoint is deprecated for most apps (see
+    spotify_service.get_audio_features). Mood resolution order is now:
+      1. User's own cached override for this track
+      2. Real Spotify audio features, if this app happens to have them
+      3. Catalog-search mood tag (from spotify_service.get_recommendations'
+         genre-search fallback)
+      4. db_recommendation_service (MongoDB precomputed features) — the
+         vector-search engine that already existed in this codebase but was
+         never actually called from any route
+      5. Simple rule-based prediction, only if we do have real features
     """
     try:
         print(f"🎯 Generating recommendations for user {request.user_id}")
-        
+
         # Get user preferences and history
         user_stats_key = f"user_stats:{request.user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {}
-        
+
         # Build personalized recommendations based on user's mood preferences (12 moods)
         user_mood_preferences = user_stats.get("mood_corrections", {})
-        
-        # Use Spotify's recommendation system as base
+
+        # Use Spotify's recommendation system as base (now with catalog-search fallback
+        # baked into spotify_service.get_recommendations, so this returns real, varied
+        # tracks even for apps without Extended Quota Mode)
         spotify_recommendations = await spotify_service.get_recommendations(
             seed_tracks=request.seed_tracks[:5] if request.seed_tracks else None,
             seed_genres=request.seed_genres[:5] if request.seed_genres else None,
@@ -245,7 +275,7 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
             limit=request.limit * 2,  # Get more for filtering
             access_token=request.access_token
         )
-        
+
         if not spotify_recommendations:
             print("⚠️ No recommendations from Spotify")
             return {
@@ -256,83 +286,123 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
                 "personalized": len(user_mood_preferences) > 0,
                 "message": "No recommendations available"
             }
-        
+
         # Enrich recommendations with audio features and mood predictions
         track_ids = [track['id'] for track in spotify_recommendations]
-        
-        # Get audio features for all recommended tracks
+
+        # Get audio features for all recommended tracks (likely unavailable — see
+        # spotify_service.get_audio_features docstring — but still worth trying in
+        # case this app has Extended Quota Mode)
         audio_features_list = await asyncio.gather(
-            *[spotify_service.get_audio_features([track_id], request.access_token) 
+            *[spotify_service.get_audio_features([track_id], request.access_token)
               for track_id in track_ids[:20]]
         )
-        
+        spotify_features_available = any(
+            f for sublist in audio_features_list for f in (sublist or []) if f
+        )
+
+        # MongoDB fallback: pull whatever precomputed features/moods exist for these
+        # tracks in the catalog collection, so we're not stuck guessing when Spotify
+        # can't give us real audio features.
+        db_feature_map: Dict[str, Dict] = {}
+        if not spotify_features_available:
+            try:
+                await db_recommendation_service.initialize()
+                if db_recommendation_service._initialized:
+                    cursor_docs = await db_recommendation_service.collection.find(
+                        {"track_id": {"$in": track_ids[:20]}}
+                    ).to_list(length=20)
+                    for doc in cursor_docs:
+                        db_feature_map[doc["track_id"]] = {
+                            "features": doc.get("features"),
+                            "moods": doc.get("moods", {}),
+                        }
+                    print(f"🗄️ MongoDB catalog matched {len(db_feature_map)}/"
+                          f"{len(track_ids[:20])} tracks with precomputed features")
+            except Exception as db_err:
+                print(f"⚠️ db_recommendation_service lookup failed: {db_err}")
+
         # Build enriched recommendations with multi-mood support
         enriched_recommendations = []
-        
+
         for idx, track in enumerate(spotify_recommendations):
             try:
-                features = audio_features_list[idx] if idx < len(audio_features_list) else None
-                
-                if not features:
-                    enriched_recommendations.append({
-                        **track,
-                        "features": None,
-                        "primary_mood": "Unknown",
-                        "all_moods": []
-                    })
-                    continue
-                
+                features = audio_features_list[idx][0] if (
+                    idx < len(audio_features_list) and audio_features_list[idx]
+                ) else None
+
                 # Check if user has a preference override for this track
                 user_override_key = f"user_model:{request.user_id}:track:{track['id']}"
                 cached_mood = await cache_service.get_from_cache(user_override_key)
-                
+
                 # Check for multi-mood override
                 multi_override_key = f"user_model:{request.user_id}:track:{track['id']}:multi"
                 cached_moods = await cache_service.get_from_cache(multi_override_key)
-                
+
                 if cached_mood or cached_moods:
-                    # Use user preference
+                    # Use user preference — highest priority, always wins
                     primary_mood = cached_mood or (cached_moods[0] if cached_moods else "Relaxed")
                     all_moods = cached_moods or [primary_mood]
                     mood_source = "user_preference"
                     confidence = 1.0
-                else:
-                    # Use multi-mood prediction with similarity matching
+
+                elif features:
+                    # Real Spotify audio features available — use ML multi-mood prediction
                     multi_moods = model_service.get_multi_mood_tags(
                         features,
-                        min_similarity=0.65,  # 65% threshold for recommendations
+                        min_similarity=0.65,
                         max_tags=3
                     )
-                    
                     if multi_moods:
                         primary_mood = multi_moods[0][0]
                         all_moods = [mood for mood, _ in multi_moods]
                         confidence = multi_moods[0][1]
                     else:
-                        # Fallback to simple rule-based
                         primary_mood = _simple_mood_prediction(features)
                         all_moods = [primary_mood]
                         confidence = 0.5
-                    
                     mood_source = "ml_prediction_multi_mood"
-                
+
+                elif track['id'] in db_feature_map and db_feature_map[track['id']].get("features"):
+                    # MongoDB catalog has precomputed features for this track
+                    db_entry = db_feature_map[track['id']]
+                    features = db_entry["features"]
+                    db_moods = db_entry.get("moods", {})
+                    primary_mood = db_moods.get("primary_mood") or _simple_mood_prediction(features)
+                    all_moods = db_moods.get("all_moods") or [primary_mood]
+                    confidence = 0.75
+                    mood_source = "mongo_catalog"
+
+                elif track.get('catalog_mood') or track.get('mood'):
+                    # Fallback: the mood this track was genre-searched for in
+                    # spotify_service.get_recommendations' catalog-search fallback.
+                    # Not as precise as real audio features, but far better than "Unknown".
+                    primary_mood = track.get('catalog_mood') or track.get('mood')
+                    all_moods = [primary_mood]
+                    confidence = 0.4
+                    mood_source = "catalog_search_genre_tag"
+
+                else:
+                    primary_mood = "Unknown"
+                    all_moods = []
+                    confidence = 0.0
+                    mood_source = "unavailable"
+
                 # Filter by target moods if specified
                 if request.target_moods:
-                    # Check if any of the track's moods match target moods
                     if not any(mood in request.target_moods for mood in all_moods):
                         continue  # Skip tracks that don't match target moods
-                
+
                 # Calculate relevance score based on user preferences (12 moods)
                 relevance_score = 1.0
                 if user_mood_preferences:
-                    # Boost tracks that match user's preferred moods
                     for mood in all_moods:
                         if mood in user_mood_preferences:
                             mood_preference_count = user_mood_preferences[mood]
                             total_feedback = user_stats.get("feedback_count", 1)
                             preference_ratio = mood_preference_count / total_feedback
-                            relevance_score += preference_ratio * 0.3  # Boost per matching mood
-                
+                            relevance_score += preference_ratio * 0.3
+
                 enriched_recommendations.append({
                     **track,
                     "features": features,
@@ -344,20 +414,20 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
                     "personalized": len(user_mood_preferences) > 0,
                     "mood_system": "12_extended_moods"
                 })
-                
+
                 if len(enriched_recommendations) >= request.limit:
                     break
-                
+
             except Exception as track_error:
                 print(f"⚠️ Error enriching track {track.get('id', 'unknown')}: {track_error}")
                 continue
-        
+
         # Sort by relevance score if personalized
         if user_mood_preferences:
             enriched_recommendations.sort(key=lambda x: x.get('relevance_score', 1.0), reverse=True)
-        
+
         print(f"✅ Generated {len(enriched_recommendations)} personalized recommendations")
-        
+
         return {
             "tracks": enriched_recommendations,
             "source": "ml_hybrid_multi_mood",
@@ -367,15 +437,16 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
             "user_preferences": user_mood_preferences,
             "target_moods": request.target_moods,
             "mood_diversity": len(set([m for t in enriched_recommendations for m in t.get('all_moods', [])])),
+            "spotify_features_available": spotify_features_available,
             "message": f"Generated {len(enriched_recommendations)} recommendations",
             "mood_system": "12_extended_moods"
         }
-        
+
     except Exception as e:
         print(f"❌ Recommendation generation failed: {e}")
         import traceback
         traceback.print_exc()
-        
+
         raise HTTPException(
             status_code=500,
             detail=f"ML recommendations unavailable: {str(e)}"
@@ -391,7 +462,7 @@ def _simple_mood_prediction(features: Dict) -> str:
     energy = features.get('energy', 0.5)
     danceability = features.get('danceability', 0.5)
     acousticness = features.get('acousticness', 0.5)
-    
+
     # Map to extended moods based on feature combinations
     if energy > 0.8 and valence > 0.7 and danceability > 0.7:
         return "Party"
@@ -436,15 +507,15 @@ async def trigger_model_retraining(
     """
     try:
         user_id = request.user_id
-        
+
         print(f"🔄 Triggering model retraining for user {user_id}")
-        
+
         # Get user stats
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {}
-        
+
         feedback_count = user_stats.get("feedback_count", 0)
-        
+
         if feedback_count < request.min_samples and not request.force:
             return {
                 "success": False,
@@ -452,14 +523,14 @@ async def trigger_model_retraining(
                 "feedback_count": feedback_count,
                 "min_required": request.min_samples
             }
-        
+
         # Add retraining task to background
         background_tasks.add_task(
             _retrain_user_model,
             user_id,
             feedback_count
         )
-        
+
         return {
             "success": True,
             "message": "Retraining started in background",
@@ -469,7 +540,7 @@ async def trigger_model_retraining(
             "status": "processing",
             "mood_system": "12_extended_moods"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -488,28 +559,28 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
     try:
         print(f"🔬 Starting background retraining for user {user_id}")
         print(f"📚 Collecting {feedback_count} feedback samples...")
-        
+
         # 1. Collect all feedback logs for this user
         feedback_pattern = f"feedback_log:{user_id}:*"
         feedback_keys = await cache_service.get_keys_by_pattern(feedback_pattern, limit=1000)
-        
+
         print(f"📥 Found {len(feedback_keys)} feedback entries")
-        
+
         if len(feedback_keys) < 10:
             print(f"⚠️ Not enough feedback entries found: {len(feedback_keys)}")
             return
-        
+
         # 2. Extract feedback data
         feedback_samples = []
         for key in feedback_keys:
             feedback = await cache_service.get_from_cache(key)
             if feedback:
                 feedback_samples.append(feedback)
-        
+
         # 3. Build mood preference weights (12 moods)
         mood_weights = {}
         mood_counts = {}
-        
+
         for sample in feedback_samples:
             # Handle multi-mood feedback
             moods = sample.get('feedback_moods', [sample.get('feedback_mood')])
@@ -518,14 +589,14 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
                     if mood not in mood_counts:
                         mood_counts[mood] = 0
                     mood_counts[mood] += 1
-        
+
         # Normalize to weights (0-1 range)
         total = sum(mood_counts.values())
         for mood, count in mood_counts.items():
             mood_weights[mood] = count / total
-        
+
         print(f"⚖️ Calculated mood weights (12 moods): {mood_weights}")
-        
+
         # 4. Calculate user-specific feature preferences (Enhanced for 12 moods)
         feature_adjustments = {
             'valence_bias': 0.0,
@@ -535,11 +606,11 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
             'instrumentalness_bias': 0.0,
             'tempo_bias': 0.0
         }
-        
+
         # Calculate biases based on mood preferences (12 extended moods)
         for mood, weight in mood_weights.items():
             mood_profile = model_service.EXTENDED_MOODS.get(mood, {}).get('profile', {})
-            
+
             # Apply weighted adjustments based on mood profiles
             if mood == "Joyful":
                 feature_adjustments['valence_bias'] += weight * 0.25
@@ -580,9 +651,9 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
             elif mood == "Ambient":
                 feature_adjustments['instrumentalness_bias'] += weight * 0.3
                 feature_adjustments['energy_bias'] -= weight * 0.25
-        
+
         print(f"🎛️ Feature adjustments: {feature_adjustments}")
-        
+
         # 5. Save personalized model parameters
         personalized_model = {
             "user_id": user_id,
@@ -595,21 +666,21 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
             "mood_diversity": len(mood_counts),
             "status": "active"
         }
-        
+
         user_model_key = f"user_model:{user_id}:trained"
         await cache_service.set_in_cache(
             user_model_key,
             personalized_model,
             expiration=86400 * 90  # 90 days
         )
-        
+
         print(f"✅ Personalized model saved for user {user_id}")
         print(f"📊 Model summary:")
         print(f"   - Feedback samples: {len(feedback_samples)}")
         print(f"   - Mood diversity: {len(mood_counts)} different moods")
         print(f"   - Mood preferences: {mood_weights}")
         print(f"   - Feature biases: {feature_adjustments}")
-        
+
         # 6. Update user stats with training completion
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {}
@@ -617,9 +688,9 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
         user_stats["trained_samples"] = len(feedback_samples)
         user_stats["model_version"] = "2.0_multi_mood"
         await cache_service.set_in_cache(user_stats_key, user_stats, expiration=86400 * 365)
-        
+
         print(f"🎉 Retraining complete for user {user_id}")
-        
+
     except Exception as e:
         print(f"❌ Background retraining failed for user {user_id}: {e}")
         import traceback
@@ -639,7 +710,7 @@ async def get_user_learning_stats(user_id: str):
     try:
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key)
-        
+
         if not user_stats:
             return {
                 "user_id": user_id,
@@ -651,11 +722,11 @@ async def get_user_learning_stats(user_id: str):
                 "track_corrections": [],
                 "mood_system": "12_extended_moods"
             }
-        
+
         feedback_count = user_stats.get("feedback_count", 0)
         mood_corrections = user_stats.get("mood_corrections", {})
         mood_diversity = len(mood_corrections)
-        
+
         # Determine personalization level
         if feedback_count >= 50:
             personalization_level = "high"
@@ -665,26 +736,26 @@ async def get_user_learning_stats(user_id: str):
             personalization_level = "low"
         else:
             personalization_level = "minimal"
-        
+
         # Check if user has a trained model
         user_model_key = f"user_model:{user_id}:trained"
         trained_model_info = await cache_service.get_from_cache(user_model_key)
         has_trained_model = trained_model_info is not None
-        
+
         # Get recent corrections
         recent_corrections = user_stats.get("track_corrections", [])[-10:]
-        
+
         # Calculate mood distribution percentages
         total_corrections = sum(mood_corrections.values())
         mood_distribution = {
             mood: round((count / total_corrections) * 100, 2) if total_corrections > 0 else 0
             for mood, count in mood_corrections.items()
         }
-        
+
         # Find favorite moods (top 3)
         sorted_moods = sorted(mood_corrections.items(), key=lambda x: x[1], reverse=True)
         favorite_moods = [mood for mood, _ in sorted_moods[:3]]
-        
+
         return {
             "user_id": user_id,
             "feedback_count": feedback_count,
@@ -703,14 +774,14 @@ async def get_user_learning_stats(user_id: str):
             "mood_system": "12_extended_moods",
             "available_moods": model_service.ALL_MOOD_LABELS
         }
-        
+
     except Exception as e:
         print(f"❌ Error fetching user stats: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch user stats: {str(e)}"
         )
-        
+
 @router.delete("/user/{user_id}/reset")
 async def reset_user_personalization(user_id: str):
     """
@@ -719,29 +790,29 @@ async def reset_user_personalization(user_id: str):
     """
     try:
         print(f"🗑️ Resetting personalization for user {user_id}")
-        
+
         # Clear user stats
         user_stats_key = f"user_stats:{user_id}"
         await cache_service.delete_from_cache(user_stats_key)
-        
+
         # Clear trained model
         user_model_key = f"user_model:{user_id}:trained"
         await cache_service.delete_from_cache(user_model_key)
-        
+
         # Clear all user overrides using pattern deletion
         override_pattern = f"user_model:{user_id}:track:*"
         override_deleted = await cache_service.delete_pattern(override_pattern)
-        
+
         # Clear feedback logs
         feedback_pattern = f"feedback_log:{user_id}:*"
         feedback_deleted = await cache_service.delete_pattern(feedback_pattern)
-        
+
         # Clear behavior logs
         behavior_pattern = f"behavior:{user_id}:*"
         behavior_deleted = await cache_service.delete_pattern(behavior_pattern)
-        
+
         print(f"✅ Deleted {override_deleted} track overrides, {feedback_deleted} feedback logs, {behavior_deleted} behavior logs")
-        
+
         return {
             "success": True,
             "message": "User personalization reset successfully",
@@ -751,7 +822,7 @@ async def reset_user_personalization(user_id: str):
             "deleted_behavior_logs": behavior_deleted,
             "mood_system": "12_extended_moods"
         }
-        
+
     except Exception as e:
         print(f"❌ Error resetting user data: {e}")
         raise HTTPException(
@@ -768,7 +839,7 @@ async def get_user_personalized_model(user_id: str):
     try:
         user_model_key = f"user_model:{user_id}:trained"
         trained_model = await cache_service.get_from_cache(user_model_key)
-        
+
         if not trained_model:
             return {
                 "user_id": user_id,
@@ -777,7 +848,7 @@ async def get_user_personalized_model(user_id: str):
                 "mood_system": "12_extended_moods",
                 "available_moods": model_service.ALL_MOOD_LABELS
             }
-        
+
         # Enhance model info with mood system details
         enhanced_model = {
             **trained_model,
@@ -793,14 +864,14 @@ async def get_user_personalized_model(user_id: str):
                 if mood in trained_model.get("mood_weights", {})
             }
         }
-        
+
         return {
             "user_id": user_id,
             "has_model": True,
             "model": enhanced_model,
             "message": "Personalized model active with 12 extended moods"
         }
-        
+
     except Exception as e:
         print(f"❌ Error fetching user model: {e}")
         raise HTTPException(
@@ -817,7 +888,7 @@ async def submit_batch_feedback(requests: List[FeedbackRequest]):
     """
     try:
         results = []
-        
+
         for request in requests:
             try:
                 result = await submit_mood_feedback(request)
@@ -833,9 +904,9 @@ async def submit_batch_feedback(requests: List[FeedbackRequest]):
                     "success": False,
                     "error": str(e)
                 })
-        
+
         successful = sum(1 for r in results if r["success"])
-        
+
         return {
             "success": True,
             "total": len(requests),
@@ -844,7 +915,7 @@ async def submit_batch_feedback(requests: List[FeedbackRequest]):
             "results": results,
             "mood_system": "12_extended_moods"
         }
-        
+
     except Exception as e:
         print(f"❌ Batch feedback failed: {e}")
         raise HTTPException(
@@ -861,7 +932,7 @@ async def log_user_behavior(request: BehaviorLogRequest):
     """
     try:
         behavior_key = f"behavior:{request.user_id}:{datetime.utcnow().date()}"
-        
+
         # Get or create today's behavior log
         behavior_log = await cache_service.get_from_cache(behavior_key) or {
             "skips": [],
@@ -870,7 +941,7 @@ async def log_user_behavior(request: BehaviorLogRequest):
             "add_to_playlist": [],
             "date": str(datetime.utcnow().date())
         }
-        
+
         # Add to appropriate list
         entry = {
             "track_id": request.track_id,
@@ -878,7 +949,7 @@ async def log_user_behavior(request: BehaviorLogRequest):
             "time_of_day": request.time_of_day,
             "current_mood": request.current_mood
         }
-        
+
         if request.action == "skip":
             behavior_log["skips"].append(entry)
         elif request.action == "replay":
@@ -887,19 +958,19 @@ async def log_user_behavior(request: BehaviorLogRequest):
             behavior_log["likes"].append(entry)
         elif request.action == "add_to_playlist":
             behavior_log["add_to_playlist"].append(entry)
-        
+
         # Save back
         await cache_service.set_in_cache(behavior_key, behavior_log, expiration=86400*30)
-        
+
         # Analyze patterns for implicit learning
         skip_count = len(behavior_log["skips"])
         replay_count = len(behavior_log["replays"])
         like_count = len(behavior_log["likes"])
-        
+
         # Update user stats with behavior insights
         user_stats_key = f"user_stats:{request.user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {}
-        
+
         if "behavior_patterns" not in user_stats:
             user_stats["behavior_patterns"] = {
                 "total_skips": 0,
@@ -907,35 +978,35 @@ async def log_user_behavior(request: BehaviorLogRequest):
                 "total_likes": 0,
                 "skip_rate": 0.0
             }
-        
+
         user_stats["behavior_patterns"]["total_skips"] += 1 if request.action == "skip" else 0
         user_stats["behavior_patterns"]["total_replays"] += 1 if request.action == "replay" else 0
         user_stats["behavior_patterns"]["total_likes"] += 1 if request.action == "like" else 0
-        
+
         total_actions = (
             user_stats["behavior_patterns"]["total_skips"] +
             user_stats["behavior_patterns"]["total_replays"] +
             user_stats["behavior_patterns"]["total_likes"]
         )
-        
+
         if total_actions > 0:
             user_stats["behavior_patterns"]["skip_rate"] = (
                 user_stats["behavior_patterns"]["total_skips"] / total_actions
             )
-        
+
         await cache_service.set_in_cache(user_stats_key, user_stats, expiration=86400*365)
-        
+
         # Implicit learning: If user skips a lot of a certain mood, adjust preferences
         if skip_count > 15 and request.current_mood:
             # Log pattern for future model adjustment
             pattern_key = f"behavior_pattern:{request.user_id}:skip_mood:{request.current_mood}"
             pattern_count = await cache_service.get_from_cache(pattern_key) or 0
             await cache_service.set_in_cache(
-                pattern_key, 
-                pattern_count + 1, 
+                pattern_key,
+                pattern_count + 1,
                 expiration=86400*30
             )
-        
+
         return {
             "success": True,
             "action_logged": request.action,
@@ -950,7 +1021,7 @@ async def log_user_behavior(request: BehaviorLogRequest):
             },
             "mood_system": "12_extended_moods"
         }
-        
+
     except Exception as e:
         print(f"❌ Error logging behavior: {e}")
         return {
@@ -969,7 +1040,7 @@ async def get_user_mood_insights(user_id: str):
     try:
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key)
-        
+
         if not user_stats:
             return {
                 "user_id": user_id,
@@ -977,10 +1048,10 @@ async def get_user_mood_insights(user_id: str):
                 "message": "No insights available yet. Start providing feedback!",
                 "mood_system": "12_extended_moods"
             }
-        
+
         mood_corrections = user_stats.get("mood_corrections", {})
         total_corrections = sum(mood_corrections.values())
-        
+
         # Calculate mood preferences as percentages
         mood_preferences = {
             mood: {
@@ -990,10 +1061,10 @@ async def get_user_mood_insights(user_id: str):
             }
             for mood, count in mood_corrections.items()
         }
-        
+
         # Find dominant mood characteristics
         dominant_moods = sorted(mood_corrections.items(), key=lambda x: x[1], reverse=True)[:3]
-        
+
         # Analyze feature preferences across all corrections
         avg_features = {
             "valence": 0.0,
@@ -1001,22 +1072,22 @@ async def get_user_mood_insights(user_id: str):
             "danceability": 0.0,
             "acousticness": 0.0
         }
-        
+
         for mood, count in mood_corrections.items():
             weight = count / total_corrections if total_corrections > 0 else 0
             mood_profile = model_service.EXTENDED_MOODS.get(mood, {}).get("profile", {})
-            
+
             for feature in avg_features.keys():
                 if feature in mood_profile:
                     avg_features[feature] += mood_profile[feature] * weight
-        
+
         # Get behavior patterns
         behavior_patterns = user_stats.get("behavior_patterns", {})
-        
+
         # Check for trained model
         user_model_key = f"user_model:{user_id}:trained"
         trained_model = await cache_service.get_from_cache(user_model_key)
-        
+
         return {
             "user_id": user_id,
             "has_insights": True,
@@ -1031,7 +1102,7 @@ async def get_user_mood_insights(user_id: str):
             "mood_system": "12_extended_moods",
             "recommendations": _generate_mood_recommendations(mood_corrections, avg_features)
         }
-        
+
     except Exception as e:
         print(f"❌ Error fetching mood insights: {e}")
         raise HTTPException(
@@ -1045,25 +1116,25 @@ def _generate_mood_recommendations(mood_corrections: Dict, avg_features: Dict) -
     Generate personalized mood recommendations based on user patterns.
     """
     recommendations = []
-    
+
     # Sort moods by preference
     sorted_moods = sorted(mood_corrections.items(), key=lambda x: x[1], reverse=True)
-    
+
     if not sorted_moods:
         return ["Try different moods to get personalized recommendations!"]
-    
+
     top_mood = sorted_moods[0][0]
-    
+
     # Find similar moods based on feature profiles
     similar_moods = []
     top_mood_profile = model_service.EXTENDED_MOODS.get(top_mood, {}).get("profile", {})
-    
+
     for mood_name in model_service.ALL_MOOD_LABELS:
         if mood_name == top_mood:
             continue
-        
+
         mood_profile = model_service.EXTENDED_MOODS.get(mood_name, {}).get("profile", {})
-        
+
         # Calculate similarity
         similarity = 0
         count = 0
@@ -1071,35 +1142,35 @@ def _generate_mood_recommendations(mood_corrections: Dict, avg_features: Dict) -
             if feature in top_mood_profile and feature in mood_profile:
                 similarity += 1 - abs(top_mood_profile[feature] - mood_profile[feature])
                 count += 1
-        
+
         if count > 0:
             similarity /= count
             if similarity > 0.7:  # 70% similar
                 similar_moods.append((mood_name, similarity))
-    
+
     similar_moods.sort(key=lambda x: x[1], reverse=True)
-    
+
     # Generate recommendations
     recommendations.append(f"You love {top_mood} music! Here are some suggestions:")
-    
+
     if similar_moods:
         recommendations.append(f"Try these similar moods: {', '.join([m[0] for m in similar_moods[:3]])}")
-    
+
     # Check for mood diversity
     if len(mood_corrections) < 4:
         recommendations.append("Explore more moods to discover new favorites!")
-    
+
     # Feature-based recommendations
     if avg_features["energy"] > 0.7:
         recommendations.append("You prefer high-energy tracks. Check out 'Excited' and 'Party' moods!")
     elif avg_features["energy"] < 0.3:
         recommendations.append("You enjoy calm music. Try 'Ambient' and 'Dreamy' moods!")
-    
+
     if avg_features["valence"] > 0.7:
         recommendations.append("You're drawn to happy vibes! Explore 'Joyful' mood.")
     elif avg_features["valence"] < 0.3:
         recommendations.append("You appreciate melancholic tones. Try 'Melancholic' mood.")
-    
+
     return recommendations
 
 
@@ -1110,12 +1181,22 @@ async def health_check():
     """
     model_loaded = model_service.mood_model is not None
     cache_connected = cache_service.is_connected()
-    
+
+    # Surface whether the MongoDB catalog fallback is actually reachable —
+    # previously this service was never initialized/called anywhere, so a
+    # misconfigured MONGO_URI would go unnoticed until a recommendation request failed.
+    try:
+        await db_recommendation_service.initialize()
+        mongo_connected = db_recommendation_service._initialized
+    except Exception:
+        mongo_connected = False
+
     return {
         "status": "healthy",
         "service": "model_training_feedback_multi_mood",
         "model_loaded": model_loaded,
         "cache_connected": cache_connected,
+        "mongo_catalog_connected": mongo_connected,
         "mood_system": "12_extended_moods",
         "base_moods": model_service.BASE_MOOD_CLASSES,
         "extended_moods": model_service.ALL_MOOD_LABELS,
@@ -1131,9 +1212,10 @@ async def health_check():
             "Background Training",
             "Behavior Pattern Analysis",
             "Mood Insights & Analytics",
-            "Implicit Learning from User Actions"
+            "Implicit Learning from User Actions",
+            "MongoDB Catalog Fallback (for when Spotify audio-features is unavailable)"
         ],
-        "version": "2.0_multi_mood"
+        "version": "2.1_mongo_fallback"
     }
 
 
@@ -1145,17 +1227,17 @@ async def get_available_moods():
     """
     try:
         moods_info = []
-        
+
         for mood_name in model_service.ALL_MOOD_LABELS:
             mood_config = model_service.EXTENDED_MOODS.get(mood_name, {})
-            
+
             moods_info.append({
                 "name": mood_name,
                 "base_moods": mood_config.get("base_moods", []),
                 "profile": mood_config.get("profile", {}),
                 "description": _get_mood_description(mood_name)
             })
-        
+
         return {
             "success": True,
             "mood_system": "12_extended_moods",
@@ -1163,7 +1245,7 @@ async def get_available_moods():
             "base_moods": model_service.BASE_MOOD_CLASSES,
             "extended_moods": moods_info
         }
-        
+
     except Exception as e:
         print(f"❌ Error fetching available moods: {e}")
         raise HTTPException(
@@ -1190,5 +1272,5 @@ def _get_mood_description(mood_name: str) -> str:
         "Ambient": "Instrumental soundscapes for background ambiance",
         "Party": "Dance-ready bangers for celebration"
     }
-    
+
     return descriptions.get(mood_name, "Discover this mood's unique vibe")

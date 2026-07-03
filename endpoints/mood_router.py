@@ -22,8 +22,17 @@ from services.spotify_service import (
     SpotifyNotFoundError,
     SpotifyServiceError
 )
+import time
 import traceback
-import os
+
+
+last_log_times = {}
+
+def log_rate_limited(key: str, message: str):
+    now = time.time()
+    if key not in last_log_times or now - last_log_times[key] > 20:
+        last_log_times[key] = now
+        print(message)
 
 router = APIRouter()
 
@@ -104,22 +113,22 @@ def format_mood_response(mood_data: Dict) -> Dict:
     Ensures both old (single mood) and new (multi-mood) formats work
     """
     # Extract primary mood (for backward compatibility)
-    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood', 'Relaxed')
+    primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood') or 'Unknown'
     
     # Get all moods (new format)
-    all_moods = mood_data.get('all_moods', [primary_mood])
+    all_moods = mood_data.get('all_moods', [primary_mood] if primary_mood != 'Unknown' else [])
     
     # Get mood scores
-    mood_scores = mood_data.get('mood_scores', {primary_mood: mood_data.get('confidence', 0.5)})
+    mood_scores = mood_data.get('mood_scores', {primary_mood: mood_data.get('confidence')} if primary_mood != 'Unknown' else {})
     
     # Build response
     return {
         'primary_mood': primary_mood,
         'all_moods': all_moods,
         'mood_scores': mood_scores,
-        'confidence': mood_data.get('confidence', 0.5),
+        'confidence': mood_data.get('confidence'),
         'base_mood': mood_data.get('base_mood', primary_mood),
-        'lyrics_mood': mood_data.get('lyrics_mood', 'Neutral'),
+        'lyrics_mood': mood_data.get('lyrics_mood'),
         'source': mood_data.get('source', 'ml_model_multi_tag'),
         'scores': mood_data.get('scores', {}),
         'num_tags': len(all_moods),
@@ -132,7 +141,10 @@ def format_mood_response(mood_data: Dict) -> Dict:
 
 # Original Multi-API endpoints
 @router.post("/track", response_model=TrackMoodResponse)
-async def get_track_mood(request: TrackMoodRequest):
+async def get_track_mood(
+    request: TrackMoodRequest,
+    authorization: str = Header(None)
+):
     """Analyze mood for a single track using multi-API approach - NOW WITH MULTI-MOOD TAGS"""
     cache_key = f"track:mood:{request.track_name}:{request.artist_name}:{request.user_id or 'global'}"
     
@@ -147,11 +159,17 @@ async def get_track_mood(request: TrackMoodRequest):
         print(f"🎵 ANALYZING TRACK: {request.track_name} by {request.artist_name}")
         print(f"{'='*60}\n")
         
+        access_token = None
+        if authorization and authorization.startswith('Bearer '):
+            access_token = authorization.replace('Bearer ', '')
+
         # Get audio features
         print("Step 1: Getting audio features...")
         audio_features = await music_service.get_audio_features(
             request.track_name,
-            request.artist_name
+            request.artist_name,
+            genre=request.genre,
+            access_token=access_token
         )
         
         if not audio_features:
@@ -228,7 +246,10 @@ async def get_track_mood(request: TrackMoodRequest):
 
 
 @router.post("/playlist", response_model=PlaylistMoodResponse)
-async def get_playlist_mood(request: PlaylistMoodRequest):
+async def get_playlist_mood(
+    request: PlaylistMoodRequest,
+    authorization: str = Header(None)
+):
     """Analyze mood for entire playlist - NOW WITH 12-MOOD DISTRIBUTION"""
     try:
         print(f"\n{'='*60}")
@@ -237,7 +258,11 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
         
         if not request.tracks:
             raise HTTPException(status_code=400, detail="No tracks provided")
-        
+            
+        access_token = None
+        if authorization and authorization.startswith('Bearer '):
+            access_token = authorization.replace('Bearer ', '')
+
         processed_tracks = []
         
         for idx, track_data in enumerate(request.tracks):
@@ -260,7 +285,11 @@ async def get_playlist_mood(request: PlaylistMoodRequest):
                     audio_features = cached_mood.get('features')
                     tags = cached_mood.get('tags', [])
                 else:
-                    audio_features = await music_service.get_audio_features(track_name, artist_name)
+                    audio_features = await music_service.get_audio_features(
+                        track_name, 
+                        artist_name,
+                        access_token=access_token
+                    )
                     if not audio_features:
                         audio_features = music_service.get_default_features()
                     
@@ -396,25 +425,32 @@ async def get_currently_playing_mood(
     try:
         access_token = extract_access_token(authorization)
         
-        print(f"\n{'='*80}")
-        print(f"🎧 ANALYZING CURRENTLY PLAYING TRACK")
-        print(f"{'='*80}\n")
+        log_rate_limited("currently_playing_banner", f"\n{'='*80}\n🎧 ANALYZING CURRENTLY PLAYING TRACK\n{'='*80}\n")
         
         # Get currently playing
-        print("Step 1: Fetching playback state...")
+        log_rate_limited("currently_playing_step1", "Step 1: Fetching playback state...")
         playback_data = await spotify_service.get_currently_playing(access_token)
         
         if not playback_data or not playback_data.get('is_playing'):
-            print("❌ No track currently playing")
+            log_rate_limited("currently_playing_no_track", "❌ No track currently playing")
             return {
                 'is_playing': False,
                 'message': 'No track currently playing',
                 'timestamp': None
             }
+
+        # NOTE: Spotify's `progress_ms` is already the live, up-to-the-moment
+        # playback position computed by Spotify at response time. `timestamp`
+        # is "when playback state was last changed" (play/pause/seek/skip),
+        # NOT "when this response was generated" — adding (now - timestamp)
+        # on top of progress_ms double-counts elapsed time and makes the
+        # reported position drift further and further ahead of real playback
+        # the longer it's been since the last seek/play event. Trust
+        # progress_ms as-is; do not adjust it here.
         
         # Handle podcasts
         if playback_data.get('type') == 'episode':
-            print("📻 Currently playing: Podcast Episode")
+            log_rate_limited("currently_playing_podcast", "📻 Currently playing: Podcast Episode")
             return {
                 'is_playing': True,
                 'type': 'episode',
@@ -430,74 +466,137 @@ async def get_currently_playing_mood(
         track_name = track['name']
         artist_name = track['artists'][0]['name']
         
-        print(f"✅ Playing: {track_name} by {artist_name}")
-        print(f"   Device: {device['name']} ({device['type']})")
-        print(f"   Volume: {device.get('volume_percent')}%")
-        
-        # Get audio features
-        print("\nStep 2: Getting audio features...")
-        try:
-            audio_features = await music_service.get_audio_features(track_name, artist_name)
-            if not audio_features:
+        log_rate_limited(f"currently_playing_track_{track_id}", f"✅ Playing: {track_name} by {artist_name}\n   Device: {device['name']} ({device['type']})\n   Volume: {device.get('volume_percent')}%")
+
+        # ------------------------------------------------------------------
+        # Reuse the cached analysis for this track/user if we already have
+        # one. Previously, Steps 2-5 (audio features -> lyrics -> genre ->
+        # model prediction) ran on EVERY poll (every ~10s), even for the
+        # exact same currently-playing song. Any transient variance or
+        # partial failure in those 4 external calls produced a *different*
+        # mood/confidence/energy/valence each time, which is what caused the
+        # "Now Playing" card to flicker between different mood tags, and
+        # also seeded the live-history sorted set (used for the Live Mood
+        # Graph) with inconsistent values for a single song.
+        #
+        # We still write a fresh history point on every poll below (so the
+        # graph keeps getting new timestamped data and stays "live"), but we
+        # now source it from the SAME cached mood/features for as long as
+        # the same track keeps playing, so the line stays flat and
+        # continuous instead of jumping around.
+        # ------------------------------------------------------------------
+        cache_key = f"track:mood:{track_name}:{artist_name}:{user_id or 'global'}"
+        cached_analysis = await cache_service.get_from_cache(cache_key)
+
+        if cached_analysis and cached_analysis.get('mood') and cached_analysis.get('features'):
+            log_rate_limited(f"currently_playing_cache_hit_{track_id}", f"📦 Using cached mood analysis for '{track_name}'")
+            audio_features = cached_analysis['features']
+            formatted_mood = cached_analysis['mood']
+            cached_tags = cached_analysis.get('tags') or []
+            genre = cached_tags[0] if cached_tags else None
+        else:
+            # Get audio features
+            log_rate_limited("currently_playing_step2", "\nStep 2: Getting audio features...")
+            try:
+                audio_features = await music_service.get_audio_features(track_name, artist_name, access_token=access_token)
+                if not audio_features:
+                    audio_features = music_service.get_default_features()
+
+                log_rate_limited(f"currently_playing_features_{track_id}", f"✅ Features: V={audio_features.get('valence', 0):.2f}, E={audio_features.get('energy', 0):.2f}")
+            except Exception as e:
+                log_rate_limited(f"currently_playing_features_err_{track_id}", f"⚠️ Audio features error: {e}")
                 audio_features = music_service.get_default_features()
-            
-            print(f"✅ Features: V={audio_features.get('valence', 0):.2f}, E={audio_features.get('energy', 0):.2f}")
-        except Exception as e:
-            print(f"⚠️ Audio features error: {e}")
-            audio_features = music_service.get_default_features()
-        
-        # Get lyrics sentiment
-        print("\nStep 3: Analyzing lyrics...")
-        try:
-            lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
-            print(f"✅ Lyrics: Polarity={lyrics_sentiment.get('polarity', 0):.2f}")
-        except Exception as e:
-            print(f"⚠️ Lyrics error: {e}")
-            lyrics_sentiment = {'polarity': 0.0, 'subjectivity': 0.0}
-        
-        # Get genre
-        print("\nStep 4: Getting genre...")
-        try:
-            tags = await music_service.get_lastfm_tags(track_name, artist_name)
-            genre = tags[0] if tags else None
-            print(f"✅ Genre: {genre or 'Unknown'}")
-        except Exception as e:
-            print(f"⚠️ Genre error: {e}")
-            genre = None
-        
-        # Predict mood (multi-mood)
-        print("\nStep 5: Predicting mood(s)...")
-        try:
-            mood_data = await model_service.predict_mood_from_features(
-                audio_features,
-                lyrics_sentiment,
-                user_id=user_id,
-                track_id=track_id,
-                genre=genre
-            )
-            
-            formatted_mood = format_mood_response(mood_data)
-            
-            print(f"\n✅ MOOD PREDICTED:")
-            print(f"   Primary Mood: {formatted_mood['primary_mood']} ⭐")
-            print(f"   All Moods: {', '.join(formatted_mood['all_moods'])}")
-            print(f"   Confidence: {formatted_mood['confidence']:.2%}")
-            
-        except Exception as e:
-            print(f"⚠️ Mood prediction error: {e}")
-            traceback.print_exc()
-            
-            formatted_mood = {
-                'primary_mood': 'Unknown',
-                'all_moods': ['Unknown'],
-                'mood_scores': {'Unknown': 0.0},
-                'confidence': 0.0,
-                'source': 'fallback',
-                'scores': {
-                    'valence': audio_features.get('valence', 0.5),
-                    'energy': audio_features.get('energy', 0.5)
+
+            # Get lyrics sentiment
+            log_rate_limited("currently_playing_step3", "\nStep 3: Analyzing lyrics...")
+            try:
+                lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
+                log_rate_limited(f"currently_playing_lyrics_{track_id}", f"✅ Lyrics: Polarity={lyrics_sentiment.get('polarity', 0):.2f}")
+            except Exception as e:
+                log_rate_limited(f"currently_playing_lyrics_err_{track_id}", f"⚠️ Lyrics error: {e}")
+                lyrics_sentiment = {'polarity': 0.0, 'subjectivity': 0.0}
+
+            # Get genre
+            log_rate_limited("currently_playing_step4", "\nStep 4: Getting genre...")
+            try:
+                tags = await music_service.get_lastfm_tags(track_name, artist_name)
+                genre = tags[0] if tags else None
+                log_rate_limited(f"currently_playing_genre_{track_id}", f"✅ Genre: {genre or 'Unknown'}")
+            except Exception as e:
+                log_rate_limited(f"currently_playing_genre_err_{track_id}", f"⚠️ Genre error: {e}")
+                genre = None
+
+            # Predict mood (multi-mood)
+            log_rate_limited("currently_playing_step5", "\nStep 5: Predicting mood(s)...")
+            try:
+                mood_data = await model_service.predict_mood_from_features(
+                    audio_features,
+                    lyrics_sentiment,
+                    user_id=user_id,
+                    track_id=track_id,
+                    genre=genre
+                )
+
+                formatted_mood = format_mood_response(mood_data)
+
+                # Cache the successful analysis so subsequent polls for this
+                # same track reuse it instead of recomputing (and possibly
+                # drifting) each time. Cache under both the name-based key
+                # (matches /track and /playlist convention) even for
+                # anonymous ('global') users, so the stabilization applies
+                # regardless of whether user_id was supplied.
+                cache_payload = {
+                    "track_name": track_name,
+                    "artist_name": artist_name,
+                    "mood": formatted_mood,
+                    "features": audio_features,
+                    "tags": [genre] if genre else []
+                }
+                await cache_service.set_in_cache(cache_key, cache_payload, expiration=86400)
+
+                log_rate_limited(f"currently_playing_mood_{track_id}", f"\n✅ MOOD PREDICTED:\n   Primary Mood: {formatted_mood['primary_mood']} ⭐\n   All Moods: {', '.join(formatted_mood['all_moods'])}\n   Confidence: {formatted_mood['confidence']:.2%}")
+
+            except Exception as e:
+                log_rate_limited(f"currently_playing_mood_err_{track_id}", f"⚠️ Mood prediction error: {e}")
+                traceback.print_exc()
+
+                formatted_mood = {
+                    'primary_mood': 'Unknown',
+                    'all_moods': ['Unknown'],
+                    'mood_scores': {'Unknown': 0.0},
+                    'confidence': 0.0,
+                    'source': 'fallback',
+                    'scores': {
+                        'valence': audio_features.get('valence', 0.5),
+                        'energy': audio_features.get('energy', 0.5)
+                    }
+                }
+                # Never cache a fallback result - a transient failure
+                # shouldn't get "stuck" and stabilized for the rest of the
+                # song. The next poll will retry the full pipeline.
+
+        # Push a fresh, timestamped point to the live-history sorted set on
+        # every poll (whether this poll hit cache or computed fresh), using
+        # whichever audio_features/formatted_mood we ended up with above.
+        # Skip only for genuine fallback failures, so a temporary glitch
+        # doesn't inject a bad point into the Live Mood Graph.
+        if user_id and formatted_mood.get('source') != 'fallback':
+            import time as _time
+            history_entry = {
+                "track_id": track_id,
+                "track_name": track_name,
+                "artist_name": artist_name,
+                "mood": formatted_mood.get('primary_mood', 'Unknown'),
+                "confidence": formatted_mood.get('confidence', 0.0),
+                "features": {
+                    "valence": audio_features.get('valence', 0.5),
+                    "energy": audio_features.get('energy', 0.5),
+                    "danceability": audio_features.get('danceability', 0.5),
+                    "acousticness": audio_features.get('acousticness', 0.5),
+                    "tempo": audio_features.get('tempo', 120),
                 }
             }
+            await cache_service.zadd_history(user_id, int(_time.time() * 1000), history_entry)
         
         # Build response
         response = {
@@ -613,17 +712,27 @@ async def get_spotify_playlist_mood(
                 if cached_mood:
                     print(f"   📦 Cache HIT")
                     mood_data = cached_mood
+                    track_info = cached_mood.get('track_info', {})
                 else:
                     lyrics_sentiment = await lyrics_service.get_lyrics_sentiment(track_name, artist_name)
                     
-                    mood_data = await model_service.predict_mood_from_spotify_track(
+                    raw_mood_data = await model_service.predict_mood_from_spotify_track(
                         track_id=track_id,
                         access_token=access_token,
                         lyrics_sentiment=lyrics_sentiment,
                         user_id=request.user_id
                     )
-                    
-                    mood_data = format_mood_response(mood_data)
+
+                    # IMPORTANT: format_mood_response() only whitelists mood-
+                    # classification fields (primary_mood, all_moods, scores,
+                    # etc). It does NOT preserve 'track_info' (the audio
+                    # feature data — valence/energy/danceability). Grab it
+                    # from the raw response before it's discarded, then
+                    # stitch it back onto the formatted dict so it survives
+                    # both this request and the cache round-trip below.
+                    track_info = raw_mood_data.get('track_info', {})
+                    mood_data = format_mood_response(raw_mood_data)
+                    mood_data['track_info'] = track_info
                     
                     await cache_service.set_in_cache(cache_key, mood_data, expiration=3600)
                 
@@ -648,7 +757,7 @@ async def get_spotify_playlist_mood(
                     "mood_scores": mood_data.get('mood_scores', {}),
                     "moodScore": mood_data.get('confidence', 0),
                     "moodDetails": mood_data,
-                    "features": mood_data.get('track_info', {})
+                    "features": track_info
                 })
                 
             except Exception as track_error:
@@ -1006,29 +1115,45 @@ async def get_rate_limit_status():
 @router.post("/spotify/clear-cache")
 async def clear_spotify_cache(
     authorization: str = Header(None),
-    cache_type: Optional[str] = None
+    cache_type: Optional[str] = None,
+    user_id: Optional[str] = None
 ):
-    """Clear Spotify-related cache entries"""
+    """Clear Spotify-related cache entries for a user"""
     try:
-        access_token = extract_access_token(authorization)
-        
+        cleared_keys = []
+        errors = []
+
+        # Determine which patterns to delete
+        patterns = []
+        if cache_type in (None, 'all', 'features'):
+            patterns.append('features:*')
+        if cache_type in (None, 'all', 'mood'):
+            patterns.append('mood:*')
+        if cache_type in (None, 'all', 'user_stats') and user_id:
+            patterns.append(f'user_stats:{user_id}')
+        if cache_type in (None, 'all', 'mbid'):
+            patterns.append('mbid:*')
+        if cache_type in (None, 'all', 'acousticbrainz'):
+            patterns.append('acousticbrainz:*')
+
+        for pattern in patterns:
+            try:
+                count = await cache_service.delete_by_pattern(pattern)
+                cleared_keys.append({'pattern': pattern, 'deleted': count})
+            except Exception as pe:
+                errors.append({'pattern': pattern, 'error': str(pe)})
+
         return {
             "status": "success",
-            "message": f"Cache clearing requested for: {cache_type or 'all'}",
-            "note": "Cache entries will expire naturally based on TTL",
-            "ttl_info": {
-                "playlists": "5 minutes",
-                "playlist_tracks": "10 minutes",
-                "track_info": "1 day",
-                "user_data": "1 hour",
-                "mood_analysis": "1 hour"
-            }
+            "message": f"Cache cleared for: {cache_type or 'all'}",
+            "cleared": cleared_keys,
+            "errors": errors
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Cache clear error: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -18,6 +18,22 @@ from typing import Optional, Any, Dict
 # Global Redis client
 redis_client: Optional[redis.Redis] = None
 
+import time
+
+# Local memory cache fallback when Redis is offline
+memory_cache: Dict[str, Dict[str, Any]] = {}
+
+def clean_memory_cache():
+    """Remove expired items from memory cache"""
+    now = time.time()
+    expired_keys = [k for k, v in memory_cache.items() if v["expires_at"] < now]
+    for k in expired_keys:
+        try:
+            del memory_cache[k]
+        except KeyError:
+            pass
+
+
 
 async def connect_redis():
     """
@@ -133,6 +149,17 @@ async def get_from_cache(key: str) -> Optional[Any]:
         Cached value (parsed from JSON) or None if not found/error
     """
     if not redis_client:
+        clean_memory_cache()
+        item = memory_cache.get(key)
+        if item:
+            if item["expires_at"] > time.time():
+                print(f"📦 Memory Cache HIT: {key}")
+                return item["value"]
+            else:
+                try:
+                    del memory_cache[key]
+                except KeyError:
+                    pass
         return None
     
     try:
@@ -177,7 +204,11 @@ async def set_in_cache(
         True if successful, False otherwise
     """
     if not redis_client:
-        return False
+        clean_memory_cache()
+        expires_at = time.time() + expiration
+        memory_cache[key] = {"value": value, "expires_at": expires_at}
+        print(f"💾 Memory Cache SET: {key} (expires in {expiration}s)")
+        return True
     
     try:
         # Serialize value to JSON
@@ -214,6 +245,9 @@ async def delete_from_cache(key: str) -> bool:
         True if successful, False otherwise
     """
     if not redis_client:
+        if key in memory_cache:
+            del memory_cache[key]
+            return True
         return False
     
     try:
@@ -246,7 +280,21 @@ async def delete_pattern(pattern: str) -> int:
         Number of keys deleted
     """
     if not redis_client:
-        return 0
+        import re
+        deleted = 0
+        # Convert redis pattern to python regex
+        regex_str = '^' + pattern.replace('*', '.*') + '$'
+        try:
+            regex = re.compile(regex_str)
+            keys_to_del = [k for k in memory_cache.keys() if regex.match(k)]
+            for k in keys_to_del:
+                del memory_cache[k]
+                deleted += 1
+        except Exception:
+            pass
+        if deleted > 0:
+            print(f"🗑️ Memory Cache DELETE pattern: {pattern} ({deleted} keys)")
+        return deleted
     
     try:
         # Scan for keys matching pattern
@@ -292,7 +340,8 @@ async def exists(key: str) -> bool:
         True if key exists, False otherwise
     """
     if not redis_client:
-        return False
+        clean_memory_cache()
+        return key in memory_cache
     
     try:
         result = await redis_client.exists(key)
@@ -314,6 +363,11 @@ async def get_ttl(key: str) -> int:
         TTL in seconds, -1 if no expiration, -2 if key doesn't exist
     """
     if not redis_client:
+        clean_memory_cache()
+        item = memory_cache.get(key)
+        if item:
+            remaining = int(item["expires_at"] - time.time())
+            return remaining if remaining > 0 else -2
         return -2
     
     try:
@@ -474,7 +528,15 @@ async def get_keys_by_pattern(pattern: str, limit: int = 100) -> list:
         List of matching keys
     """
     if not redis_client:
-        return []
+        clean_memory_cache()
+        import re
+        regex_str = '^' + pattern.replace('*', '.*') + '$'
+        try:
+            regex = re.compile(regex_str)
+            matching_keys = [k for k in memory_cache.keys() if regex.match(k)]
+            return matching_keys[:limit]
+        except Exception:
+            return []
     
     try:
         keys = []
@@ -576,6 +638,58 @@ async def get_cached_mood_prediction(track_id: str, user_id: str) -> Optional[Di
     return await get_from_cache(key)
 
 
+async def zadd_history(user_id: str, timestamp_ms: int, entry: Dict) -> bool:
+    """
+    Add a listening event to the user's history sorted set.
+    Key: history:{user_id}
+    Score: Unix timestamp in milliseconds (for ordering)
+    Member: JSON-serialised entry
+    TTL: 30 days
+    """
+    import json as _json
+    global redis_client
+    if not redis_client:
+        return False
+    try:
+        key = f"history:{user_id}"
+        member = _json.dumps(entry, ensure_ascii=False)
+        await redis_client.zadd(key, {member: timestamp_ms})
+        # Keep sorted set for 30 days; reset TTL on each write
+        await redis_client.expire(key, 30 * 24 * 3600)
+        # Trim to last 2000 entries to avoid unbounded growth
+        await redis_client.zremrangebyrank(key, 0, -2001)
+        return True
+    except Exception as e:
+        print(f"⚠️ Redis zadd_history error: {e}")
+        return False
+
+
+async def zrange_history(user_id: str, since_ms: int = 0, limit: int = 500) -> list:
+    """
+    Retrieve listening history entries for a user since a given Unix ms timestamp.
+    Returns list of dicts sorted by timestamp ascending.
+    """
+    import json as _json
+    global redis_client
+    if not redis_client:
+        return []
+    try:
+        key = f"history:{user_id}"
+        members = await redis_client.zrangebyscore(key, since_ms, '+inf', start=0, num=limit, withscores=True)
+        result = []
+        for member, score in members:
+            try:
+                entry = _json.loads(member)
+                entry['_ts'] = int(score)
+                result.append(entry)
+            except Exception:
+                continue
+        return result
+    except Exception as e:
+        print(f"⚠️ Redis zrange_history error: {e}")
+        return []
+
+
 def is_connected() -> bool:
     """
     Check if Redis client is connected.
@@ -609,6 +723,8 @@ __all__ = [
     'get_cached_lyrics_sentiment',
     'cache_mood_prediction',
     'get_cached_mood_prediction',
+    'zadd_history',
+    'zrange_history',
     'is_connected',
     'redis_client'
 ]
