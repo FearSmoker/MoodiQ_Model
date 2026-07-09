@@ -11,7 +11,6 @@ import json
 import argparse
 import os
 
-
 # Updated to match the 4 moods from 278k_song_labelled.csv
 MOOD_CLASSES = ["Calm", "Energetic", "Happy", "Sad"]
 
@@ -109,11 +108,8 @@ TEST_TRACKS = {
     }
 }
 
-
 def load_metadata(metadata_path='models/model_metadata.json'):
-    """
-    Load model metadata (scaler parameters, feature order, etc.)
-    """
+    
     if not os.path.exists(metadata_path):
         print(f"⚠️  Metadata file not found at {metadata_path}")
         print("   Using default normalization (no scaling)")
@@ -124,11 +120,8 @@ def load_metadata(metadata_path='models/model_metadata.json'):
     
     return metadata
 
-
 def normalize_features(features, metadata):
-    """
-    Normalize features using saved scaler parameters.
-    """
+    
     if metadata is None:
         # No normalization
         return features
@@ -144,17 +137,13 @@ def normalize_features(features, metadata):
         normalized.append(value)
     
     normalized = np.array(normalized)
-    
-    # Apply standardization: (x - mean) / std
+
     normalized = (normalized - scaler_mean) / scaler_scale
     
     return normalized
 
-
 def test_model(model_path, metadata_path='models/model_metadata.json'):
-    """
-    Test the ONNX model with predefined test cases.
-    """
+    
     print("=" * 60)
     print("🧪 Testing ONNX Model")
     print("=" * 60)
@@ -281,11 +270,8 @@ def test_model(model_path, metadata_path='models/model_metadata.json'):
     
     return accuracy
 
-
 def interactive_test(model_path, metadata_path='models/model_metadata.json'):
-    """
-    Interactive testing mode where user can input custom audio features.
-    """
+    
     print("\n" + "=" * 60)
     print("🎹 Interactive Test Mode")
     print("=" * 60)
@@ -346,11 +332,8 @@ def interactive_test(model_path, metadata_path='models/model_metadata.json'):
             print("\n👋 Exiting interactive mode")
             break
 
-
 def main():
-    """
-    Main testing function.
-    """
+    
     parser = argparse.ArgumentParser(description='Test ONNX mood prediction model')
     parser.add_argument('--model', type=str, default='models/mood_model.onnx',
                         help='Path to ONNX model file')
@@ -365,7 +348,6 @@ def main():
         interactive_test(args.model, args.metadata)
     else:
         test_model(args.model, args.metadata)
-
 
 if __name__ == '__main__':
     main()

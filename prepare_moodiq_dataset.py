@@ -78,9 +78,8 @@ MOOD_MAPPINGS = {
     'work': 'Focus'
 }
 
-
 def find_mood_column(df):
-    """Find the column containing mood/emotion labels."""
+    
     possible_names = ['mood', 'emotion', 'label', 'labels', 'class', 'sentiment', 'feeling']
     
     for col in df.columns:
@@ -95,9 +94,8 @@ def find_mood_column(df):
     
     return None
 
-
 def map_mood(original_mood):
-    """Map original mood label to one of our 6 target moods."""
+    
     if pd.isna(original_mood):
         return None
     
@@ -122,17 +120,8 @@ def map_mood(original_mood):
     
     return None
 
-
 def prepare_dataset(input_path, output_path, max_per_mood=None, balance=True):
-    """
-    Load and prepare the MoodiQ dataset for training.
     
-    Args:
-        input_path: Path to input CSV file
-        output_path: Path to save processed CSV
-        max_per_mood: Maximum samples per mood (None = no limit)
-        balance: Whether to balance the dataset
-    """
     print("=" * 60)
     print("🎵 MoodiQ Dataset Preparation")
     print("=" * 60)
@@ -291,7 +280,6 @@ def prepare_dataset(input_path, output_path, max_per_mood=None, balance=True):
     
     return df_clean
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="Prepare MoodiQ dataset for mood classification training"
@@ -328,7 +316,6 @@ def main():
         max_per_mood=args.max_per_mood,
         balance=not args.no_balance
     )
-
 
 if __name__ == '__main__':
     main()

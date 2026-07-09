@@ -47,7 +47,6 @@ PLAYLIST_FEATURE_KEYS = [
     "duration_ms"
 ]
 
-# For analytics and fusion we track also the 12 refined mood classes from model_service
 MOOD_CLASSES = getattr(model_service, "MOOD_CLASSES", [
     "Happy","Sad","Energetic","Calm","Focused","Romantic",
     "Chill","Determined","Reflective","Confident","Anxious","Excited"
@@ -83,7 +82,6 @@ SMOOTH_SWAP_ITERS = 12
 ENERGY_JUMP_THRESHOLD = 0.35    # large jump marker for potential smoothing
 GAP_FILL_CANDIDATES = 25        # number of candidate fills to fetch when gap detected
 
-
 # -------------------------
 # Utility helpers
 # -------------------------
@@ -92,11 +90,11 @@ def _clip(val: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, val))
 
 def _normalize_loudness_db_to_01(db: float) -> float:
-    """Map -60..0 dB to 0..1"""
+    
     return _clip((db + 60.0) / 60.0, 0.0, 1.0)
 
 def _normalize_tempo_to_01(bpm: float) -> float:
-    """Map 40..200 BPM to 0..1"""
+    
     try:
         bpmf = float(bpm)
     except Exception:
@@ -109,13 +107,12 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
     except Exception:
         return float(default)
 
-
 # -------------------------
-# Aggregation: robust & weighted
+
 # -------------------------
 
 def _iqr_trim(arr: np.ndarray) -> np.ndarray:
-    """Perform IQR trimming; return trimmed array (or original if too aggressive)."""
+    
     if arr.size == 0:
         return arr
     q1 = np.percentile(arr, 25)
@@ -130,18 +127,11 @@ def _iqr_trim(arr: np.ndarray) -> np.ndarray:
         return arr  # avoid over-trimming
     return trimmed
 
-
 def aggregate_playlist_features_statistical(
     tracks: List[Dict],
     use_popularity_weighting: bool = True
 ) -> Dict[str, Any]:
-    """
-    High-quality playlist aggregation:
-    - collects per-feature arrays, trims outliers with IQR,
-    - calculates weighted mean using popularity and feature importance,
-    - computes diagnostics (std, count, used_count) and diversity metrics,
-    - returns aggregated features in original units (tempo in BPM, loudness in dB).
-    """
+    
     if not tracks:
         return {"_metadata": {"track_count": 0}, **DEFAULT_FEATURES}
 
@@ -197,7 +187,6 @@ def aggregate_playlist_features_statistical(
             diagnostics[k] = {"count": 0, "used": 0, "std": 0.0}
             continue
 
-        # IQR trim for robustness
         used_arr = _iqr_trim(arr)
 
         # compute weights combining popularity & feature importance
@@ -243,7 +232,6 @@ def aggregate_playlist_features_statistical(
 
     return aggregated
 
-
 # -------------------------
 # Playlist mood prediction (single aggregated pass)
 # -------------------------
@@ -254,23 +242,14 @@ async def predict_playlist_mood(
     lyric_hint_provider: Optional[callable] = None,
     fusion_weights: Tuple[float, float] = (0.75, 0.25)
 ) -> Dict[str, Any]:
-    """
-    Given a list of tracks, produce a playlist-level mood prediction.
-    Steps:
-      1. Aggregate features using aggregate_playlist_features_statistical()
-      2. Optionally collect lyric_hint (dictionary of mood probs) via lyric_hint_provider
-      3. Use model_service.predict_mood_single_track() and optionally predict_mood_fused()
-    Returns result with aggregated_features, mood prediction, and diagnostics.
-    """
+    
     aggregated = aggregate_playlist_features_statistical(tracks, use_popularity_weighting=True)
 
-    # Build features dict that model_service expects (first 10 normalized fields retained)
     model_input = {k: aggregated.get(k, DEFAULT_FEATURES.get(k)) for k in [
         "danceability", "energy", "loudness", "speechiness", "acousticness",
         "instrumentalness", "liveness", "valence", "tempo", "spec_rate"
     ]}
 
-    # If loudness is stored as normalized 0..1 in some track sources, convert if needed:
     if 0.0 <= model_input["loudness"] <= 1.0:
         # try to detect if features came normalized (heuristic)
         # if tempo seems normalized (<=1) or loudness within -60..0 then convert.
@@ -279,7 +258,7 @@ async def predict_playlist_mood(
             # nothing to do, keep as-is
             pass
         else:
-            # If loudness is in [0,1] but we expect dB, convert to dB for model_service normalization path
+            
             model_input["loudness"] = model_input["loudness"] * -60.0  # convert 1->-60 (best-effort)
     # Call model predictions (sync function)
     try:
@@ -291,7 +270,7 @@ async def predict_playlist_mood(
     lyric_hint = None
     if use_lyrics_hint and lyric_hint_provider:
         try:
-            # lyric_hint_provider should accept tracks and return merged mood-prob dict matching MOOD_CLASSES
+            
             lyric_hint = await lyric_hint_provider(tracks)
         except Exception as e:
             print(f"⚠️ lyric_hint_provider failed: {e}")
@@ -321,7 +300,6 @@ async def predict_playlist_mood(
     result["track_count"] = len(tracks)
     return result
 
-
 # -------------------------
 # Flow optimizer (smooth order by energy & valence)
 # -------------------------
@@ -331,14 +309,7 @@ def optimize_playlist_flow(
     progression: str = "gradual_rise",
     max_iters: int = SMOOTH_SWAP_ITERS
 ) -> List[Dict]:
-    """
-    Reorder playlist to create a smooth energy/valence progression.
-    Heuristics:
-      - Sort by energy primary (asc for gradual_rise, desc for gradual_fall)
-      - Secondary sort by valence
-      - Greedy smoothing swaps to reduce adjacent energy jumps
-    Returns new ordered list (copy).
-    """
+    
     if not tracks:
         return []
 
@@ -402,24 +373,12 @@ def optimize_playlist_flow(
 
     return ordered
 
-
 # -------------------------
 # Gap detection & gap-filling recommendations
 # -------------------------
 
 def detect_large_gaps(tracks: List[Dict], feature: str = "energy", threshold: float = 0.35) -> List[Dict]:
-    """
-    Scan playlist for large adjacent differences in a given feature (energy or valence).
-    Returns list of gap descriptors:
-      {
-        "index": i,           # gap between i and i+1
-        "left": track_i,
-        "right": track_i+1,
-        "left_value": ...,
-        "right_value": ...,
-        "gap": abs diff
-      }
-    """
+    
     gaps = []
     for i in range(len(tracks)-1):
         left = tracks[i]
@@ -438,22 +397,15 @@ def detect_large_gaps(tracks: List[Dict], feature: str = "energy", threshold: fl
             })
     return gaps
 
-
 async def suggest_gap_fillers(
     gap_descriptor: Dict,
     num_suggestions: int = 10,
     search_pool_multiplier: int = 2
 ) -> List[Dict]:
-    """
-    Suggest candidate tracks to fill a gap using music_service.recommend_songs_by_playlist_vector.
-    Approach:
-      - build a 'target' feature vector between left and right (midpoint)
-      - query DB for nearest neighbors using music_service.recommend_songs_by_playlist_vector
-    """
+    
     left_f = gap_descriptor["left"].get("features") or {}
     right_f = gap_descriptor["right"].get("features") or {}
 
-    # Build midpoint target features
     target = {}
     for k in PLAYLIST_FEATURE_KEYS:
         lv = left_f.get(k, DEFAULT_FEATURES.get(k))
@@ -479,18 +431,12 @@ async def suggest_gap_fillers(
         print(f"⚠️ Gap filler recommendation failed: {e}")
         return []
 
-
 # -------------------------
 # Visualization helpers
 # -------------------------
 
 def prepare_playlist_visualization_data(tracks: List[Dict]) -> Dict[str, Any]:
-    """
-    Prepare aggregated chart-friendly payloads:
-      - line_series: energy, valence, danceability, tempo across index
-      - bar_summary: top mood distribution or averaged features
-      - table_rows: per-track summary (name, artist, energy, valence, mood)
-    """
+    
     line_series = {
         "energy": [],
         "valence": [],
@@ -553,7 +499,6 @@ def prepare_playlist_visualization_data(tracks: List[Dict]) -> Dict[str, Any]:
         "top_moods": top_moods
     }
 
-
 # -------------------------
 # Live queue incremental aggregation helpers
 # -------------------------
@@ -563,18 +508,7 @@ async def incremental_live_queue_aggregate(
     new_track: Dict,
     ttl_seconds: int = 300
 ) -> Dict[str, Any]:
-    """
-    When a live track starts playing, push its metadata to redis queue (cache_service).
-    Then compute incremental aggregated features for live analytics.
-
-    Expected cache_service interface:
-      - append_to_list(key, value, expiration)
-      - get_list(key) -> list
-      - set_in_cache(key, value, expiration)
-      - get_from_cache(key)
-
-    Returns the new aggregated result for the live queue.
-    """
+    
     # get existing queue
     try:
         await cache_service.append_to_list(redis_key, new_track, expiration=ttl_seconds)
@@ -623,13 +557,8 @@ async def incremental_live_queue_aggregate(
 
     return result
 
-
 async def flush_live_queue_to_db(redis_key: str, user_id: Optional[str] = None, mongo_collection_name: str = "moodanalytics"):
-    """
-    When the live session ends (timeout or logout), flush the final aggregated snapshot to MongoDB.
-    This function expects a backend API or DB helper; by default we will attempt to use
-    cache_service.store_to_db or similar; if not available, we'll just return the payload.
-    """
+    
     snapshot = await cache_service.get_from_cache(f"{redis_key}:last_snapshot")
     if not snapshot:
         # compute from queue directly
@@ -657,15 +586,12 @@ async def flush_live_queue_to_db(redis_key: str, user_id: Optional[str] = None, 
     # Otherwise, return snapshot for the caller to persist
     return snapshot
 
-
 # -------------------------
 # Convenience test harness
 # -------------------------
 
 async def test_playlist_service_with_sample_tracks(sample_tracks: List[Dict]):
-    """
-    Quick test harness: aggregate, predict, optimize, detect gaps and prepare viz payload.
-    """
+    
     print("🧪 Testing playlist_service pipeline...")
 
     # 1) Aggregate
@@ -699,7 +625,6 @@ async def test_playlist_service_with_sample_tracks(sample_tracks: List[Dict]):
         "gaps": gaps,
         "viz": viz
     }
-
 
 # Expose public API
 class PlaylistAnalyzerWrapper:

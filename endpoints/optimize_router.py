@@ -5,33 +5,23 @@ from services import model_service
 
 router = APIRouter()
 
-
 class OptimizeFlowRequest(BaseModel):
-    """
-    Request model matching backend's POST /api/playlists/optimize
-    """
+    
     tracks: List[Dict[str, Any]]  # Track objects with mood and features
     start_mood: Optional[Dict[str, float]] = None
     end_mood: Optional[Dict[str, float]] = None
     algorithm: str = 'dynamic_programming'
     user_id: Optional[str] = None
 
-
 class OptimizeFlowResponse(BaseModel):
-    """Response matching backend expectations"""
+    
     optimizedOrder: List[int]
     flowScore: float
     transitions: List[Dict[str, Any]]
 
-
 @router.post("/flow", response_model=OptimizeFlowResponse)
 async def optimize_playlist_flow(request: OptimizeFlowRequest):
-    """
-    Optimize playlist order for smooth mood transitions.
     
-    This endpoint matches the backend's POST /api/playlists/optimize.
-    Uses Dynamic Programming to find the optimal song order.
-    """
     try:
         if not request.tracks or len(request.tracks) == 0:
             raise HTTPException(
@@ -109,17 +99,12 @@ async def optimize_playlist_flow(request: OptimizeFlowRequest):
             detail=f"Failed to optimize playlist flow: {str(e)}"
         )
 
-
 def _optimize_flow_greedy(
     tracks: List[Dict], 
     start_mood: Dict, 
     end_mood: Dict
 ) -> Dict:
-    """
-    Simple greedy algorithm for playlist optimization.
-    Always picks the nearest next track.
-    Faster but less optimal than DP.
-    """
+    
     import numpy as np
     
     n = len(tracks)
@@ -156,8 +141,7 @@ def _optimize_flow_greedy(
     used[current_idx] = True
     total_cost += distances[current_idx]
     current_mood = track_moods[current_idx]
-    
-    # Greedily add nearest tracks
+
     transitions = []
     for _ in range(n - 1):
         min_dist = float('inf')
@@ -197,7 +181,6 @@ def _optimize_flow_greedy(
         "totalCost": float(total_cost)
     }
 
-
 def _optimize_flow_simulated_annealing(
     tracks: List[Dict],
     start_mood: Dict,
@@ -205,10 +188,7 @@ def _optimize_flow_simulated_annealing(
     max_iterations: int = 1000,
     initial_temp: float = 100.0
 ) -> Dict:
-    """
-    Simulated Annealing algorithm for playlist optimization.
-    Can escape local minima for better global optimum.
-    """
+    
     import numpy as np
     import random
     
@@ -227,7 +207,7 @@ def _optimize_flow_simulated_annealing(
         cost = 0
         # Cost from start to first track
         cost += mood_distance(start_mood, track_moods[order[0]])
-        # Cost between consecutive tracks
+        
         for i in range(len(order) - 1):
             cost += mood_distance(track_moods[order[i]], track_moods[order[i+1]])
         # Cost from last track to end
@@ -303,12 +283,9 @@ def _optimize_flow_simulated_annealing(
         "totalCost": float(best_cost)
     }
 
-
 @router.get("/algorithms")
 async def get_available_algorithms():
-    """
-    Returns available optimization algorithms and their characteristics.
-    """
+    
     return {
         "algorithms": [
             {
@@ -332,10 +309,9 @@ async def get_available_algorithms():
         ]
     }
 
-
 @router.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    
     return {
         "status": "healthy",
         "service": "playlist_optimization"

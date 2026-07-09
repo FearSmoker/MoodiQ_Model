@@ -17,9 +17,8 @@ from services.live_queue_service import live_queue_service
 from services.db_recommendation_service import db_recommendation_service
 from services import model_service, music_service
 
-
 async def test_playlist_aggregation():
-    """Test advanced playlist aggregation"""
+    
     print("\n" + "="*80)
     print("TEST 1: ADVANCED PLAYLIST AGGREGATION")
     print("="*80)
@@ -97,9 +96,8 @@ async def test_playlist_aggregation():
     print("\n✅ Playlist aggregation test PASSED")
     return aggregated, mood_data
 
-
 async def test_live_session():
-    """Test live listening queue"""
+    
     print("\n" + "="*80)
     print("TEST 2: LIVE LISTENING SESSION")
     print("="*80)
@@ -162,8 +160,6 @@ async def test_live_session():
     print(f"   Queue size: {queue_analytics['track_count']}")
     print(f"   Current mood: {queue_analytics['current_mood']['primary_mood']}")
 
-
-    
     print("\n📊 Getting current session...")
     queue_data = await live_queue_service.get_current_queue(user_id, session_id)
 
@@ -195,9 +191,8 @@ async def test_live_session():
     print("\n✅ Live session test PASSED")
     return final_analytics
 
-
 async def test_database_recommendations():
-    """Test MongoDB recommendations"""
+    
     print("\n" + "="*80)
     print("TEST 3: DATABASE RECOMMENDATIONS")
     print("="*80)
@@ -256,9 +251,8 @@ async def test_database_recommendations():
     print("\n✅ Database recommendations test PASSED")
     return recommendations
 
-
 async def test_flow_optimization():
-    """Test enhanced flow optimization"""
+    
     print("\n" + "="*80)
     print("TEST 4: FLOW OPTIMIZATION")
     print("="*80)
@@ -297,9 +291,8 @@ async def test_flow_optimization():
     print("\n✅ Flow optimization test PASSED")
     return result
 
-
 async def run_all_tests():
-    """Run complete test suite"""
+    
     print("\n" + "="*80)
     print("🧪 COMPLETE FLOW TESTING SUITE")
     print("="*80)
@@ -339,7 +332,6 @@ async def run_all_tests():
     finally:
         # Cleanup
         await db_recommendation_service.close()
-
 
 if __name__ == "__main__":
     print("\n🚀 Starting comprehensive testing...")

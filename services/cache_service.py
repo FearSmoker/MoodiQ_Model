@@ -14,7 +14,6 @@ import os
 import json
 from typing import Optional, Any, Dict
 
-
 # Global Redis client
 redis_client: Optional[redis.Redis] = None
 
@@ -24,7 +23,7 @@ import time
 memory_cache: Dict[str, Dict[str, Any]] = {}
 
 def clean_memory_cache():
-    """Remove expired items from memory cache"""
+    
     now = time.time()
     expired_keys = [k for k, v in memory_cache.items() if v["expires_at"] < now]
     for k in expired_keys:
@@ -33,14 +32,8 @@ def clean_memory_cache():
         except KeyError:
             pass
 
-
-
 async def connect_redis():
-    """
-    Connect to Redis server with error handling and retry logic.
-    Supports both local Redis and Upstash Redis.
-    Requires redis>=5.0.1 for asyncio support.
-    """
+    
     global redis_client
     
     # Check if caching is enabled
@@ -121,11 +114,8 @@ async def connect_redis():
         redis_client = None
         return None
 
-
 async def disconnect_redis():
-    """
-    Gracefully disconnect from Redis.
-    """
+    
     global redis_client
     
     if redis_client:
@@ -137,17 +127,8 @@ async def disconnect_redis():
         finally:
             redis_client = None
 
-
 async def get_from_cache(key: str) -> Optional[Any]:
-    """
-    Retrieve a value from cache by key.
     
-    Args:
-        key: Cache key
-        
-    Returns:
-        Cached value (parsed from JSON) or None if not found/error
-    """
     if not redis_client:
         clean_memory_cache()
         item = memory_cache.get(key)
@@ -186,23 +167,12 @@ async def get_from_cache(key: str) -> Optional[Any]:
         print(f"⚠️ Error getting from cache '{key}': {e}")
         return None
 
-
 async def set_in_cache(
     key: str, 
     value: Any, 
     expiration: int = 3600
 ) -> bool:
-    """
-    Store a value in cache with optional expiration.
     
-    Args:
-        key: Cache key
-        value: Value to cache (will be JSON-serialized)
-        expiration: TTL in seconds (default: 1 hour)
-        
-    Returns:
-        True if successful, False otherwise
-    """
     if not redis_client:
         clean_memory_cache()
         expires_at = time.time() + expiration
@@ -233,17 +203,8 @@ async def set_in_cache(
         print(f"⚠️ Error setting in cache '{key}': {e}")
         return False
 
-
 async def delete_from_cache(key: str) -> bool:
-    """
-    Delete a key from cache.
     
-    Args:
-        key: Cache key to delete
-        
-    Returns:
-        True if successful, False otherwise
-    """
     if not redis_client:
         if key in memory_cache:
             del memory_cache[key]
@@ -268,17 +229,8 @@ async def delete_from_cache(key: str) -> bool:
         print(f"⚠️ Error deleting from cache '{key}': {e}")
         return False
 
-
 async def delete_pattern(pattern: str) -> int:
-    """
-    Delete all keys matching a pattern.
     
-    Args:
-        pattern: Redis pattern (e.g., "user_model:user_123:*")
-        
-    Returns:
-        Number of keys deleted
-    """
     if not redis_client:
         import re
         deleted = 0
@@ -328,17 +280,8 @@ async def delete_pattern(pattern: str) -> int:
         print(f"⚠️ Error deleting pattern '{pattern}': {e}")
         return 0
 
-
 async def exists(key: str) -> bool:
-    """
-    Check if a key exists in cache.
     
-    Args:
-        key: Cache key
-        
-    Returns:
-        True if key exists, False otherwise
-    """
     if not redis_client:
         clean_memory_cache()
         return key in memory_cache
@@ -351,17 +294,8 @@ async def exists(key: str) -> bool:
         print(f"⚠️ Error checking key existence '{key}': {e}")
         return False
 
-
 async def get_ttl(key: str) -> int:
-    """
-    Get the remaining TTL (time to live) for a key.
     
-    Args:
-        key: Cache key
-        
-    Returns:
-        TTL in seconds, -1 if no expiration, -2 if key doesn't exist
-    """
     if not redis_client:
         clean_memory_cache()
         item = memory_cache.get(key)
@@ -378,18 +312,8 @@ async def get_ttl(key: str) -> int:
         print(f"⚠️ Error getting TTL for '{key}': {e}")
         return -2
 
-
 async def extend_ttl(key: str, additional_seconds: int) -> bool:
-    """
-    Extend the TTL of an existing key.
     
-    Args:
-        key: Cache key
-        additional_seconds: Seconds to add to current TTL
-        
-    Returns:
-        True if successful, False otherwise
-    """
     if not redis_client:
         return False
     
@@ -409,18 +333,8 @@ async def extend_ttl(key: str, additional_seconds: int) -> bool:
         print(f"⚠️ Error extending TTL for '{key}': {e}")
         return False
 
-
 async def increment(key: str, amount: int = 1) -> Optional[int]:
-    """
-    Increment a numeric value in cache.
     
-    Args:
-        key: Cache key
-        amount: Amount to increment by (default: 1)
-        
-    Returns:
-        New value after increment, or None on error
-    """
     if not redis_client:
         return None
     
@@ -432,15 +346,8 @@ async def increment(key: str, amount: int = 1) -> Optional[int]:
         print(f"⚠️ Error incrementing '{key}': {e}")
         return None
 
-
 async def get_cache_stats() -> Dict[str, Any]:
-    """
-    Get Redis cache statistics and information.
-    Compatible with both local Redis and Upstash (which may restrict INFO commands).
     
-    Returns:
-        Dictionary with cache statistics
-    """
     if not redis_client:
         return {
             "connected": False,
@@ -494,15 +401,8 @@ async def get_cache_stats() -> Dict[str, Any]:
             "error": str(e)
         }
 
-
 async def flush_cache() -> bool:
-    """
-    Flush all keys from the current database.
-    ⚠️ Use with caution - this deletes ALL cached data!
     
-    Returns:
-        True if successful, False otherwise
-    """
     if not redis_client:
         return False
     
@@ -515,18 +415,8 @@ async def flush_cache() -> bool:
         print(f"⚠️ Error flushing cache: {e}")
         return False
 
-
 async def get_keys_by_pattern(pattern: str, limit: int = 100) -> list:
-    """
-    Get keys matching a pattern (for debugging/monitoring).
     
-    Args:
-        pattern: Redis pattern (e.g., "user_model:*")
-        limit: Maximum number of keys to return
-        
-    Returns:
-        List of matching keys
-    """
     if not redis_client:
         clean_memory_cache()
         import re
@@ -559,36 +449,16 @@ async def get_keys_by_pattern(pattern: str, limit: int = 100) -> list:
         print(f"⚠️ Error getting keys by pattern '{pattern}': {e}")
         return []
 
-
 async def set_json(key: str, value: Dict, expiration: int = 3600) -> bool:
-    """
-    Store a dictionary as JSON in cache (explicit JSON storage).
     
-    Args:
-        key: Cache key
-        value: Dictionary to store
-        expiration: TTL in seconds
-        
-    Returns:
-        True if successful, False otherwise
-    """
     if not isinstance(value, dict):
         print(f"⚠️ set_json requires a dictionary, got {type(value)}")
         return False
     
     return await set_in_cache(key, value, expiration)
 
-
 async def get_json(key: str) -> Optional[Dict]:
-    """
-    Retrieve a JSON object from cache (explicit JSON retrieval).
     
-    Args:
-        key: Cache key
-        
-    Returns:
-        Dictionary or None if not found
-    """
     result = await get_from_cache(key)
     
     if result and isinstance(result, dict):
@@ -596,56 +466,43 @@ async def get_json(key: str) -> Optional[Dict]:
     
     return None
 
-
 # Convenience functions for common cache patterns
 
 async def cache_audio_features(track_id: str, features: Dict) -> bool:
-    """Cache audio features for a track."""
+    
     key = f"features:{track_id}"
     ttl = int(os.getenv('CACHE_TTL_AUDIO_FEATURES', '86400'))  # 1 day
     return await set_in_cache(key, features, ttl)
 
-
 async def get_cached_audio_features(track_id: str) -> Optional[Dict]:
-    """Get cached audio features for a track."""
+    
     key = f"features:{track_id}"
     return await get_from_cache(key)
 
-
 async def cache_lyrics_sentiment(track_name: str, artist_name: str, sentiment: Dict) -> bool:
-    """Cache lyrics sentiment analysis."""
+    
     key = f"lyrics:{track_name}:{artist_name}"
     ttl = int(os.getenv('CACHE_TTL_LYRICS', '604800'))  # 1 week
     return await set_in_cache(key, sentiment, ttl)
 
-
 async def get_cached_lyrics_sentiment(track_name: str, artist_name: str) -> Optional[Dict]:
-    """Get cached lyrics sentiment."""
+    
     key = f"lyrics:{track_name}:{artist_name}"
     return await get_from_cache(key)
 
-
 async def cache_mood_prediction(track_id: str, user_id: str, mood_data: Dict) -> bool:
-    """Cache mood prediction for a track and user."""
+    
     key = f"track:mood:{track_id}:{user_id}"
     ttl = int(os.getenv('CACHE_TTL_MOOD', '3600'))  # 1 hour
     return await set_in_cache(key, mood_data, ttl)
 
-
 async def get_cached_mood_prediction(track_id: str, user_id: str) -> Optional[Dict]:
-    """Get cached mood prediction."""
+    
     key = f"track:mood:{track_id}:{user_id}"
     return await get_from_cache(key)
 
-
 async def zadd_history(user_id: str, timestamp_ms: int, entry: Dict) -> bool:
-    """
-    Add a listening event to the user's history sorted set.
-    Key: history:{user_id}
-    Score: Unix timestamp in milliseconds (for ordering)
-    Member: JSON-serialised entry
-    TTL: 30 days
-    """
+    
     import json as _json
     global redis_client
     if not redis_client:
@@ -663,12 +520,8 @@ async def zadd_history(user_id: str, timestamp_ms: int, entry: Dict) -> bool:
         print(f"⚠️ Redis zadd_history error: {e}")
         return False
 
-
 async def zrange_history(user_id: str, since_ms: int = 0, limit: int = 500) -> list:
-    """
-    Retrieve listening history entries for a user since a given Unix ms timestamp.
-    Returns list of dicts sorted by timestamp ascending.
-    """
+    
     import json as _json
     global redis_client
     if not redis_client:
@@ -689,16 +542,9 @@ async def zrange_history(user_id: str, since_ms: int = 0, limit: int = 500) -> l
         print(f"⚠️ Redis zrange_history error: {e}")
         return []
 
-
 def is_connected() -> bool:
-    """
-    Check if Redis client is connected.
     
-    Returns:
-        True if connected, False otherwise
-    """
     return redis_client is not None
-
 
 # Export the client for direct access if needed
 __all__ = [

@@ -82,15 +82,13 @@ TEST_CASES = [
     },
 ]
 
-
 def check_feature_range(value, expected_range):
-    """Check if value is in expected range"""
+    
     min_val, max_val = expected_range
     return min_val <= value <= max_val
 
-
 async def test_model_loading():
-    """Test 1: Model Loading"""
+    
     print("\n" + "="*80)
     print("TEST 1: MODEL LOADING")
     print("="*80)
@@ -112,9 +110,8 @@ async def test_model_loading():
         print(f"❌ Model loading failed: {e}")
         return False
 
-
 async def test_feature_normalization():
-    """Test 2: Feature Normalization"""
+    
     print("\n" + "="*80)
     print("TEST 2: FEATURE NORMALIZATION")
     print("="*80)
@@ -149,9 +146,8 @@ async def test_feature_normalization():
         print(f"❌ Normalization failed: {e}")
         return False
 
-
 async def test_mood_classification():
-    """Test 3: Mood Classification Accuracy"""
+    
     print("\n" + "="*80)
     print("TEST 3: MOOD CLASSIFICATION ACCURACY")
     print("="*80)
@@ -249,9 +245,8 @@ async def test_mood_classification():
     
     return accuracy >= 60, results
 
-
 async def test_mood_mapping():
-    """Test 4: External Mood Mapping"""
+    
     print("\n" + "="*80)
     print("TEST 4: EXTERNAL MOOD MAPPING")
     print("="*80)
@@ -302,9 +297,8 @@ async def test_mood_mapping():
     
     return accuracy >= 80
 
-
 async def test_genre_adaptive_weighting():
-    """Test 5: Genre-Adaptive Weighting"""
+    
     print("\n" + "="*80)
     print("TEST 5: GENRE-ADAPTIVE WEIGHTING")
     print("="*80)
@@ -330,9 +324,8 @@ async def test_genre_adaptive_weighting():
         print("❌ Genre weighting needs adjustment")
         return False
 
-
 async def run_all_tests():
-    """Run all tests"""
+    
     print("\n" + "="*80)
     print("🧪 COMPREHENSIVE MODEL ACCURACY TESTING")
     print("="*80)
@@ -388,7 +381,6 @@ async def run_all_tests():
         print("❌ CRITICAL: Major issues detected - review model")
     
     return results
-
 
 if __name__ == "__main__":
     print("Starting comprehensive model testing...")

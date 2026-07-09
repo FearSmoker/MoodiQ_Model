@@ -9,12 +9,8 @@ from typing import List, Dict, Optional
 from motor.motor_asyncio import AsyncIOMotorClient
 import numpy as np
 
-
 class DatabaseRecommendationService:
-    """
-    MongoDB-based recommendation engine using vector similarity
-    """
-    
+
     def __init__(self):
         self.client = None
         self.db = None
@@ -22,7 +18,7 @@ class DatabaseRecommendationService:
         self._initialized = False
     
     async def initialize(self):
-        """Initialize MongoDB connection"""
+        
         if self._initialized:
             return
         
@@ -49,15 +45,7 @@ class DatabaseRecommendationService:
             self._initialized = False
     
     def calculate_feature_vector(self, features: Dict) -> List[float]:
-        """
-        Convert audio features to normalized vector for similarity search
         
-        Args:
-            features: Audio features dictionary
-            
-        Returns:
-            Normalized feature vector
-        """
         # Feature order (must match database)
         feature_names = [
             'valence', 'energy', 'danceability', 'acousticness',
@@ -90,16 +78,7 @@ class DatabaseRecommendationService:
         vector1: List[float],
         features2: Dict
     ) -> float:
-        """
-        Calculate cosine similarity between feature vector and track features
         
-        Args:
-            vector1: Normalized feature vector
-            features2: Track features dictionary
-            
-        Returns:
-            Similarity score (0-1)
-        """
         vector2 = self.calculate_feature_vector(features2)
         
         dot_product = np.dot(vector1, vector2)
@@ -117,19 +96,7 @@ class DatabaseRecommendationService:
         min_similarity: float = 0.75,
         exclude_track_ids: Optional[List[str]] = None
     ) -> List[Dict]:
-        """
-        Find similar tracks using MongoDB vector search
         
-        Args:
-            target_features: Target audio features
-            target_moods: Optional mood filters
-            limit: Maximum results (10-50)
-            min_similarity: Minimum similarity threshold
-            exclude_track_ids: Track IDs to exclude
-            
-        Returns:
-            List of similar tracks with similarity scores
-        """
         if not self._initialized:
             await self.initialize()
         
@@ -217,18 +184,7 @@ class DatabaseRecommendationService:
         limit: int = 50,
         diversity_factor: float = 0.2
     ) -> List[Dict]:
-        """
-        Get recommendations based on aggregated playlist features
         
-        Args:
-            playlist_features: Aggregated playlist audio features
-            playlist_moods: Detected playlist moods
-            limit: Number of recommendations
-            diversity_factor: How much diversity to introduce (0-1)
-            
-        Returns:
-            List of recommended tracks
-        """
         print(f"🎯 Generating database recommendations for playlist")
         
         # Find highly similar tracks
@@ -267,17 +223,7 @@ class DatabaseRecommendationService:
         limit: int = 50,
         feature_preferences: Optional[Dict] = None
     ) -> List[Dict]:
-        """
-        Get recommendations based purely on mood
         
-        Args:
-            mood: Target mood
-            limit: Number of recommendations
-            feature_preferences: Optional feature preferences
-            
-        Returns:
-            List of tracks matching mood
-        """
         if not self._initialized:
             await self.initialize()
         
@@ -335,11 +281,10 @@ class DatabaseRecommendationService:
             return []
     
     async def close(self):
-        """Close MongoDB connection"""
+        
         if self.client:
             self.client.close()
             print("✅ MongoDB connection closed")
-
 
 # Global instance
 db_recommendation_service = DatabaseRecommendationService()

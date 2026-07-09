@@ -63,7 +63,6 @@ class GracefulExit:
     def _on_cancel(self, *_):
         self.cancelled = True
 
-
 # YTMusic client
 ytmusic_client: Optional[YTMusic] = None
 
@@ -77,20 +76,17 @@ def init_ytmusic_once():
             print(f"❌ YTMusic init failed: {e}")
             ytmusic_client = None
 
-
 YTMUSIC_COUNTRIES = [
     "US","GB","IN","CA","AU","DE","FR","BR","MX","ES","IT","NL","SE","NO","DK",
     "IE","PL","PT","TR","IL","AE","SA","ZA","EG","NG","KE","JP","KR","TW",
     "HK","SG","TH","MY","ID","PH","VN","AR","CL","CO","PE","UY","EC","CR",
 ]
 
-
 def _dedupe_key(name: Optional[str], artists: Optional[List[str]]) -> Optional[Tuple[str,str]]:
     if not name or not artists:
         return None
     artist = artists[0] if artists else ""
     return (name.strip().lower(), artist.strip().lower())
-
 
 def _yt_song_to_minimal(song: Dict) -> Optional[Dict]:
     try:
@@ -119,7 +115,6 @@ def _yt_song_to_minimal(song: Dict) -> Optional[Dict]:
         }
     except Exception:
         return None
-
 
 async def harvest_from_charts(max_per_country: int = 200) -> List[Dict]:
     init_ytmusic_once()
@@ -151,7 +146,6 @@ async def harvest_from_charts(max_per_country: int = 200) -> List[Dict]:
 
     return out
 
-
 def _make_search_seeds(target: int) -> List[str]:
     letters = [chr(c) for c in range(ord('a'), ord('z')+1)]
     digits = [str(d) for d in range(10)]
@@ -167,7 +161,6 @@ def _make_search_seeds(target: int) -> List[str]:
         bigrams = [a+b for a in letters for b in letters]
         seeds += bigrams[:400]
     return seeds
-
 
 async def harvest_from_search(target_count: int = 100_000, per_seed: int = 250) -> List[Dict]:
     init_ytmusic_once()
@@ -207,7 +200,6 @@ async def harvest_from_search(target_count: int = 100_000, per_seed: int = 250) 
 
     return out[:target_count]
 
-
 async def yield_tracks_ytmusic_only(
     target_total: int = 100_000,
     charts_per_country: int = 200,
@@ -241,10 +233,8 @@ async def yield_tracks_ytmusic_only(
         if emitted >= target_total:
             return
 
-
 async def ensure_indexes(coll):
     await coll.create_index([("name", 1), ("artist", 1)], unique=True)
-
 
 async def bulk_upsert_batch(coll, docs: List[Dict[str, Any]]):
     if not docs:
@@ -262,7 +252,6 @@ async def bulk_upsert_batch(coll, docs: List[Dict[str, Any]]):
         log.info(f"🗃️  Mongo upsert batch: {len(docs)} attempted, {inserted} upserted/modified")
     except Exception as e:
         log.warning(f"Mongo bulk_write had errors: {e}")
-
 
 async def process_track(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
@@ -308,7 +297,6 @@ async def process_track(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except Exception as e:
         log.debug(f"process_track error: {e}")
         return None
-
 
 async def main():
     stopper = GracefulExit()
@@ -363,7 +351,6 @@ async def main():
 
     log.info("✅ Completed corpus population.")
     client.close()
-
 
 if __name__ == "__main__":
     try:

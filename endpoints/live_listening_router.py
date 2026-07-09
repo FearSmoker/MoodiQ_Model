@@ -13,10 +13,8 @@ from services import model_service, music_service
 
 router = APIRouter()
 
-
 class StartSessionRequest(BaseModel):
     user_id: str
-
 
 class AddTrackRequest(BaseModel):
     user_id: str
@@ -25,20 +23,13 @@ class AddTrackRequest(BaseModel):
     track_name: str
     artist_name: str
 
-
 class EndSessionRequest(BaseModel):
     user_id: str
     session_id: str
 
-
 @router.post("/session/start")
 async def start_live_session(request: StartSessionRequest):
-    """
-    Start a new live listening session
     
-    Returns:
-        Session ID and initial data
-    """
     try:
         session_id = await live_queue_service.start_session(request.user_id)
         
@@ -52,15 +43,9 @@ async def start_live_session(request: StartSessionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/session/add-track")
 async def add_track_to_session(request: AddTrackRequest):
-    """
-    Add track to live session and get updated analytics
     
-    Returns:
-        Updated queue analytics with real-time mood
-    """
     try:
         # Get audio features for track
         features = await music_service.get_audio_features(
@@ -119,15 +104,9 @@ async def add_track_to_session(request: AddTrackRequest):
         print(f"❌ Error adding track to session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/session/{user_id}/current")
 async def get_current_session(user_id: str):
-    """
-    Get current live session analytics
     
-    Returns:
-        Current queue state and mood analytics
-    """
     try:
         # Check for active session
         session_data = await live_queue_service.get_active_session(user_id)
@@ -178,15 +157,9 @@ async def get_current_session(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/session/end")
 async def end_live_session(request: EndSessionRequest):
-    """
-    End live session and save analytics to MongoDB
     
-    Returns:
-        Final session analytics
-    """
     try:
         final_analytics = await live_queue_service.end_session(
             request.user_id,
@@ -207,17 +180,9 @@ async def end_live_session(request: EndSessionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/session/auto-check/{user_id}")
 async def auto_check_session(user_id: str):
-    """
-    Check if session should be auto-ended due to inactivity
     
-    This endpoint should be called periodically by frontend or background task
-    
-    Returns:
-        Status and final analytics if session was ended
-    """
     try:
         result = await live_queue_service.check_and_auto_end_session(user_id)
         
@@ -236,10 +201,9 @@ async def auto_check_session(user_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/health")
 async def health_check():
-    """Health check for live listening service"""
+    
     return {
         "status": "healthy",
         "service": "live_listening",

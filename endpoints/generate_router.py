@@ -10,7 +10,6 @@ from services import music_service, model_service, lyrics_service, spotify_servi
 
 router = APIRouter()
 
-
 class GeneratePlaylistRequest(BaseModel):
     target_mood: str
     user_id: str
@@ -18,7 +17,6 @@ class GeneratePlaylistRequest(BaseModel):
     seed_artist_name: Optional[str] = None
     seed_track_id: Optional[str] = None
     limit: int = 20
-
 
 class GenerateActivityRequest(BaseModel):
     activity: str
@@ -28,9 +26,8 @@ class GenerateActivityRequest(BaseModel):
     seed_track_id: Optional[str] = None
     limit: int = 20
 
-
 # ============================================
-# HYBRID PLAYLIST GENERATION WITH 12 MOODS
+
 # ============================================
 
 @router.post("/playlist")
@@ -38,10 +35,7 @@ async def generate_mood_playlist(
     request: GeneratePlaylistRequest,
     authorization: str = Header(None)
 ):
-    """
-    Generate playlist for target mood (12 Moods + Multi-Tag)
-    NOW WITH EXTENDED MOOD MAPPING - Handles ANY mood request
-    """
+    
     try:
         # Map external mood to extended mood (12 moods)
         extended_mood = model_service.map_external_mood_to_extended(request.target_mood)
@@ -160,7 +154,6 @@ async def generate_mood_playlist(
                 access_token=access_token  # May be None — music_service handles this
             )
 
-            
         if not recommendations:
             raise HTTPException(
                 status_code=404,
@@ -304,15 +297,12 @@ async def generate_mood_playlist(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/activity")
 async def generate_activity_playlist(
     request: GenerateActivityRequest,
     authorization: str = Header(None)
 ):
-    """
-    Generate playlist for specific activity (12 Moods Compatible)
-    """
+    
     try:
         print(f"🏃 Generating playlist for activity: {request.activity}")
         
@@ -419,7 +409,6 @@ async def generate_activity_playlist(
         print(f"❌ Error generating activity playlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
 # SPOTIFY-BASED GENERATION (MULTI-MOOD)
 # ============================================
@@ -429,9 +418,7 @@ async def generate_from_spotify_top_tracks(
     request: Dict[str, Any],
     authorization: str = Header(None)
 ):
-    """
-    Generate playlist based on user's Spotify top tracks (Multi-Mood)
-    """
+    
     try:
         if not authorization or not authorization.startswith('Bearer '):
             raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
@@ -563,15 +550,12 @@ async def generate_from_spotify_top_tracks(
         print(f"❌ Error generating from top tracks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/spotify/from-recently-played")
 async def generate_from_recently_played(
     request: Dict[str, Any],
     authorization: str = Header(None)
 ):
-    """
-    Generate playlist based on recently played tracks (Multi-Mood)
-    """
+    
     try:
         if not authorization or not authorization.startswith('Bearer '):
             raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
@@ -683,16 +667,13 @@ async def generate_from_recently_played(
         print(f"❌ Error generating from recently played: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
 # DISCOVERY ENDPOINTS (MULTI-MOOD)
 # ============================================
 
 @router.post("/discover")
 async def discover_tracks(request: Dict[str, Any]):
-    """
-    Discover new tracks based on artist (Multi-Mood Compatible)
-    """
+    
     try:
         artist_name = request.get('artist_name')
         user_id = request.get('user_id')
@@ -773,15 +754,12 @@ async def discover_tracks(request: Dict[str, Any]):
         print(f"❌ Error discovering tracks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/personalized")
 async def generate_personalized_playlist(
     request: Dict[str, Any],
     authorization: str = Header(None)
 ):
-    """
-    Generate highly personalized playlist using user's feedback history (Multi-Mood)
-    """
+    
     try:
         user_id = request.get('user_id')
         limit = request.get('limit', 30)
@@ -845,10 +823,9 @@ async def generate_personalized_playlist(
         print(f"❌ Error generating personalized playlist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    
     return {
         "status": "healthy",
         "service": "playlist_generation",

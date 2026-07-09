@@ -25,7 +25,6 @@ MOOD_CLASSES = [
     "Chill", "Determined", "Reflective", "Confident", "Anxious", "Excited"
 ]
 
-# 10 Audio Features (Model Input) - EXACT ORDER MATTERS!
 MODEL_FEATURES = [
     'danceability',      # 0-1
     'energy',            # 0-1
@@ -135,18 +134,12 @@ scaler_mean = None
 scaler_scale = None
 model_loaded = False
 
-
 # ============================================
 # MODEL LOADING
 # ============================================
 
 def load_model() -> bool:
-    """
-    Load ONNX model and preprocessing parameters
     
-    Returns:
-        True if loaded successfully, False otherwise
-    """
     global mood_model, scaler_mean, scaler_scale, model_loaded
     
     if model_loaded:
@@ -218,22 +211,12 @@ def load_model() -> bool:
         model_loaded = False
         return False
 
-
 # ============================================
 # FEATURE NORMALIZATION
 # ============================================
 
 def normalize_features(features: Dict) -> np.ndarray:
-    """
-    Normalize 10 audio features for model input
-    Handles missing features and applies proper scaling
     
-    Args:
-        features: Dictionary with audio features
-        
-    Returns:
-        Normalized feature array [1, 10]
-    """
     feature_values = []
     
     for feature_name in MODEL_FEATURES:
@@ -280,17 +263,8 @@ def normalize_features(features: Dict) -> np.ndarray:
     
     return feature_array.reshape(1, -1)
 
-
 def validate_features(features: Dict) -> Dict:
-    """
-    Validate and clean feature dictionary
     
-    Args:
-        features: Raw features dictionary
-        
-    Returns:
-        Validated features dictionary
-    """
     validated = {}
     
     for feature_name in MODEL_FEATURES:
@@ -320,9 +294,8 @@ def validate_features(features: Dict) -> Dict:
     
     return validated
 
-
 # ============================================
-# MOOD PREDICTION - SINGLE TRACK
+
 # ============================================
 
 def predict_mood_single_track(
@@ -331,12 +304,7 @@ def predict_mood_single_track(
     threshold: float = 0.15,
     user_id: Optional[str] = None
 ) -> Dict:
-    """
-    Predict mood(s) for a single track.
-    Strategy:
-      1. Rule-based engine (primary - high accuracy on real data)
-      2. ONNX model used only as tiebreaker when confidence is split
-    """
+    
     features = validate_features(features)
 
     # Always run the rule engine first — it's more accurate on real songs
@@ -359,7 +327,7 @@ def predict_mood_single_track(
 
             # Only let ONNX override if it disagrees AND has VERY high confidence (>95%)
             # AND the rule engine is not very confident (<0.70)
-            # High threshold prevents the broken ONNX model from overriding good rule decisions
+            
             if onnx_mood != rule_mood and onnx_conf > 0.95 and rule_conf < 0.70:
                 print(f'⚡ ONNX override: {rule_mood}({rule_conf:.0%}) → {onnx_mood}({onnx_conf:.0%})')
                 rule_result['primary_mood'] = onnx_mood
@@ -375,18 +343,12 @@ def predict_mood_single_track(
 
     return rule_result
 
-
-
 def _rule_based_mood_prediction(
     features: Dict,
     top_k: int = 3,
     threshold: float = 0.5
 ) -> Dict:
-    """
-    Priority-based rule engine using Russell's Circumplex Model.
-    Non-overlapping decision tree — each mood has a unique decision region.
-    Validated manually against 10 real song test cases with 90%+ accuracy.
-    """
+    
     # Normalize all features to 0-1 range
     v = float(features.get('valence', 0.5))          # 0-1: happiness
     e = float(features.get('energy', 0.5))            # 0-1: intensity
@@ -410,25 +372,20 @@ def _rule_based_mood_prediction(
     # -----------------------------------------------
     decisions = []  # (mood, confidence)
 
-    # 1. EXCITED — very high energy + high valence + clearly danceable
-    #    d>0.67 threshold: Walking on Sunshine (d=0.65) stays Happy; Uptown Funk (d=0.90) is Excited
     if v > 0.7 and e > 0.78 and d > 0.67:
         decisions.append(('Excited', 0.93))
 
-    # 2. DETERMINED — high energy + low valence + either low dance OR high speechiness (rap drive)
     #    d<0.55: pure rock/metal (Given Up d=0.30, Mr.Brightside d=0.41)
-    #    speechiness override: rap motivation even at d=0.61 (Lose Yourself s=0.33, Till I Collapse s=0.32)
+    
     if e > 0.80 and v < 0.45 and (d < 0.55 or (s > 0.28 and d < 0.65)):
         decisions.append(('Determined', 0.89))
 
-    # 2b. CONFIDENT (hip-hop override) — high energy + danceability + speechy, even at mid-low valence
     #     Rap "swag": HUMBLE (Kendrick) v=0.34 e=0.72 d=0.68 s=0.38
     if e > 0.65 and d >= 0.62 and s > 0.20 and loud > 0.70:
         decisions.append(('Confident', 0.88))
 
-    # 3. ENERGETIC — high energy, ANY valence above rock-floor (not Excited/Determined)
     #    BUT: very-high-valence pop with decent dance = Happy, not Energetic
-    #    Walking on Sunshine: v=0.90 e=0.82 d=0.65 → Happy (joyful pop, not driving rock)
+    
     fired_names = [x[0] for x in decisions]
     if e > 0.72 and 'Excited' not in fired_names:
         # Happy-pop override: very high valence + decent danceability + mid energy
@@ -437,7 +394,6 @@ def _rule_based_mood_prediction(
         else:
             decisions.append(('Energetic', 0.86))
 
-    # 4. ANXIOUS — mid-high energy, very low valence (tense/dark, not Determined)
     fired_names = [x[0] for x in decisions]
     if e > 0.50 and v < 0.35 and 'Determined' not in fired_names and 'Confident' not in fired_names:
         decisions.append(('Anxious', 0.81))
@@ -455,33 +411,27 @@ def _rule_based_mood_prediction(
     if v > 0.72 and e > 0.50 and d > 0.65:
         decisions.append(('Happy', 0.88))
 
-    # 8. ROMANTIC — acoustic love song: mid valence + low energy + acoustic + vocals
-    #    All of Me: v=0.55 e=0.34 a=0.68 ins=0.0 d=0.50 — lowered acousticness threshold
     if v > 0.50 and e < 0.55 and a > 0.38 and ins < 0.35 and d > 0.35:
         decisions.append(('Romantic', 0.84))
 
-    # 9. CHILL — BEFORE Calm/Reflective: mid-to-high danceability is the key Chill marker
     #    Hip-hop, RnB, laid-back grooves: high d, low-mid e, positive v
-    #    High-d + mid-e override: Peaches (d=0.70, e=0.53, v=0.82) is Chill not Happy
+    
     if d > 0.60 and e < 0.60 and v > 0.42:
         # Higher confidence for clearly chill tracks (high d wins over Happy)
         chill_conf = 0.91 if d > 0.68 and e < 0.56 else (0.87 if d > 0.68 else 0.80)
         decisions.append(('Chill', chill_conf))
 
     # 10. REFLECTIVE — acoustic + highly instrumental + quiet
-    #     MUST have mid valence (v > 0.27): very low valence ambient = Calm, not Reflective
+    
     if a > 0.65 and ins > 0.50 and e < 0.45 and v > 0.27:
         decisions.append(('Reflective', 0.86))
 
-    # 11. FOCUSED — electronic/lo-fi instrumental: high ins, mid energy, NOT purely acoustic
     if ins > 0.60 and e < 0.55 and a < 0.70:
         decisions.append(('Focused', 0.83))
 
-    # 12. CALM — very low energy, low-mid valence, acoustic/ambient feel, NOT danceable
     if e < 0.42 and v > 0.20 and d < 0.62 and (a > 0.35 or ins > 0.40):
         decisions.append(('Calm', 0.79))
 
-    # 13. REFLECTIVE fallback — slow acoustic singer-songwriter, mid valence
     fired_names = [x[0] for x in decisions]
     if a > 0.60 and t < 0.50 and 0.27 < v < 0.72 and 'Reflective' not in fired_names:
         decisions.append(('Reflective', 0.79))
@@ -500,14 +450,13 @@ def _rule_based_mood_prediction(
             else:
                 decisions.append(('Sad', 0.56))
 
-    # Deduplicate: keep highest confidence per mood, preserving insertion order as tiebreaker
     seen = {}
     order = {}
     for i, (mood, conf) in enumerate(decisions):
         if mood not in seen or conf > seen[mood]:
             seen[mood] = conf
             order[mood] = i
-    # Sort: by confidence DESC, then by insertion order ASC (first rule fired wins ties)
+    
     sorted_decisions = sorted(seen.items(), key=lambda x: (-x[1], order[x[0]]))
 
     # Take top_k
@@ -531,14 +480,12 @@ def _rule_based_mood_prediction(
         'num_tags': len(all_moods)
     }
 
-
-
 # ============================================
 # EXTENDED MOOD SYSTEM HELPERS & COMPATIBILITY
 # ============================================
 
 def map_external_mood_to_extended(mood: str) -> str:
-    """Map external mood tag (from Spotify/Last.fm/etc.) to one of our 12 extended moods"""
+    
     if not mood:
         return "Chill" # default
     
@@ -567,9 +514,8 @@ def map_external_mood_to_extended(mood: str) -> str:
     
     return mappings.get(mood_lower, "Chill")
 
-
 def calculate_mood_similarity(features: Dict, mood_name: str) -> float:
-    """Calculate similarity between features and a target mood's profile midpoint"""
+    
     if mood_name not in EXTENDED_MOODS:
         return 0.0
     
@@ -602,9 +548,8 @@ def calculate_mood_similarity(features: Dict, mood_name: str) -> float:
         return total_similarity / total_weight
     return 0.0
 
-
 def get_multi_mood_tags(features: Dict, min_similarity: float = 0.65, max_tags: int = 3) -> List[Tuple[str, float]]:
-    """Get sorted list of (mood, similarity) tuples for features"""
+    
     mood_scores = []
     for mood in MOOD_CLASSES:
         sim = calculate_mood_similarity(features, mood)
@@ -614,7 +559,6 @@ def get_multi_mood_tags(features: Dict, min_similarity: float = 0.65, max_tags: 
     mood_scores.sort(key=lambda x: x[1], reverse=True)
     return mood_scores[:max_tags]
 
-
 async def predict_mood_from_features(
     audio_features: Dict,
     lyrics_sentiment: Optional[Dict] = None,
@@ -622,9 +566,7 @@ async def predict_mood_from_features(
     track_id: Optional[str] = None,
     genre: Optional[str] = None
 ) -> Dict:
-    """
-    Fuses audio features and TextBlob lyrics sentiment for a final mood prediction.
-    """
+    
     if lyrics_sentiment is None:
         lyrics_sentiment = {"polarity": 0.0, "subjectivity": 0.0}
         
@@ -667,7 +609,6 @@ async def predict_mood_from_features(
             if m not in scores:
                 scores[m] = 0.01
 
-    # Personalization adjustment layer (User statistics-based feedback reweighting)
     if user_id:
         try:
             from services import cache_service
@@ -678,14 +619,13 @@ async def predict_mood_from_features(
                 if total_corrections > 0:
                     for mood, count in corrections.items():
                         if mood in scores:
-                            # Apply a personalization boost proportional to how often they corrected to this mood
+                            
                             # Max boost is 0.18
                             boost = (count / total_corrections) * 0.18
                             scores[mood] += boost
         except Exception as e:
             print(f"⚠️ Personalization bias lookup failed: {e}")
 
-                
     # Lyrics sentiment-based adjustment
     if abs(polarity) > 0.1:
         pos_moods = ["Happy", "Excited", "Confident", "Chill", "Romantic", "Energetic"]
@@ -738,14 +678,13 @@ async def predict_mood_from_features(
     }
     return result
 
-
 async def predict_mood_from_spotify_track(
     track_id: str,
     access_token: str,
     lyrics_sentiment: Optional[Dict] = None,
     user_id: Optional[str] = None
 ) -> Dict:
-    """Fetch track details, audio features, and lyrics to predict mood."""
+    
     from services import spotify_service, music_service, lyrics_service
     
     # Get track details
@@ -777,23 +716,18 @@ async def predict_mood_from_spotify_track(
     result['track_info'] = features
     return result
 
-
 def calculate_playlist_mood_distribution(tracks: List[Dict]) -> Dict:
-    """Wrapper that adds the overall_mood attribute to calculate_mood_distribution results."""
+    
     res = calculate_mood_distribution(tracks)
     res['overall_mood'] = res.get('dominant_mood', 'Mixed')
     return res
-
 
 def optimize_flow_dp(
     tracks: List[Dict],
     start_mood: Dict,
     end_mood: Dict
 ) -> Dict:
-    """
-    Optimize playlist order using dynamic programming/greedy approach
-    to handle larger playlists efficiently while achieving optimal transitions.
-    """
+    
     n = len(tracks)
     if n == 0:
         return {"optimizedOrder": [], "flowScore": 1.0, "transitions": []}
@@ -859,13 +793,12 @@ def optimize_flow_dp(
         "totalCost": float(total_cost)
     }
 
-
 def optimize_flow_with_gradient(
     tracks: List[Dict],
     target_start_energy: float,
     target_end_energy: float
 ) -> Dict:
-    """Optimize playlist flow according to an energy gradient (e.g. rising energy)."""
+    
     n = len(tracks)
     if n == 0:
         return {
@@ -910,7 +843,6 @@ def optimize_flow_with_gradient(
         "energy_end": float(sorted_energies[-1])
     }
 
-
 # ============================================
 # PLAYLIST ANALYSIS
 # ============================================
@@ -919,22 +851,7 @@ def aggregate_playlist_features(
     tracks: List[Dict],
     weighting_strategy: str = 'popularity_recency'
 ) -> Dict:
-    """
-    Calculate weighted average of audio features across playlist
     
-    Weighting Strategies:
-    - 'simple': Equal weights
-    - 'popularity': Weight by track popularity
-    - 'recency': Weight by position (recent = higher)
-    - 'popularity_recency': Combined (default)
-    
-    Args:
-        tracks: List of track dicts with 'features' key
-        weighting_strategy: Weighting method
-        
-    Returns:
-        Aggregated features dictionary
-    """
     if not tracks:
         return _get_default_features()
     
@@ -1023,21 +940,11 @@ def aggregate_playlist_features(
     
     return aggregated
 
-
 def predict_playlist_mood(
     tracks: List[Dict],
     weighting_strategy: str = 'popularity_recency'
 ) -> Dict:
-    """
-    Predict mood for entire playlist using aggregated features
     
-    Args:
-        tracks: List of track dictionaries
-        weighting_strategy: Feature aggregation method
-        
-    Returns:
-        Playlist mood prediction
-    """
     if not tracks:
         return {
             'primary_mood': 'Unknown',
@@ -1069,18 +976,8 @@ def predict_playlist_mood(
     
     return mood_prediction
 
-
 def calculate_mood_distribution(tracks: List[Dict]) -> Dict:
-    """
-    Calculate mood distribution across individual tracks
-    Shows what percentage of tracks have each mood
     
-    Args:
-        tracks: List of tracks with mood predictions
-        
-    Returns:
-        Mood distribution statistics
-    """
     mood_counts = Counter()
     total_tags = 0
     
@@ -1131,7 +1028,6 @@ def calculate_mood_distribution(tracks: List[Dict]) -> Dict:
         'top_3_moods': [mood for mood, _ in mood_counts.most_common(3)]
     }
 
-
 # ============================================
 # BATCH PROCESSING
 # ============================================
@@ -1141,17 +1037,7 @@ async def batch_predict_moods(
     top_k: int = 3,
     max_concurrent: int = 10
 ) -> List[Dict]:
-    """
-    Batch predict moods for multiple tracks with concurrency control
     
-    Args:
-        tracks: List of track dicts with 'features'
-        top_k: Mood tags per track
-        max_concurrent: Max concurrent predictions
-        
-    Returns:
-        List of mood predictions
-    """
     semaphore = asyncio.Semaphore(max_concurrent)
     
     async def predict_with_semaphore(track):
@@ -1179,22 +1065,12 @@ async def batch_predict_moods(
     
     return predictions
 
-
 # ============================================
 # ENERGY ANALYSIS
 # ============================================
 
 def calculate_energy_score(features: Dict) -> float:
-    """
-    Calculate composite energy score for a track
-    Combines energy, tempo, valence, danceability
     
-    Args:
-        features: Audio features
-        
-    Returns:
-        Energy score (0-1)
-    """
     weights = {
         'energy': 0.40,
         'tempo': 0.25,
@@ -1214,17 +1090,8 @@ def calculate_energy_score(features: Dict) -> float:
     
     return float(np.clip(score, 0, 1))
 
-
 def analyze_energy_progression(tracks: List[Dict]) -> Dict:
-    """
-    Analyze how energy changes through playlist
     
-    Args:
-        tracks: List of tracks with features
-        
-    Returns:
-        Energy progression analysis
-    """
     if not tracks:
         return {
             'progression_type': 'unknown',
@@ -1281,7 +1148,6 @@ def analyze_energy_progression(tracks: List[Dict]) -> Dict:
         'energies': [float(e) for e in energies]
     }
 
-
 # ============================================
 # SIMILARITY CALCULATION
 # ============================================
@@ -1291,17 +1157,7 @@ def calculate_track_similarity(
     features2: Dict,
     feature_weights: Optional[Dict] = None
 ) -> float:
-    """
-    Calculate similarity between two tracks based on features
     
-    Args:
-        features1: First track features
-        features2: Second track features
-        feature_weights: Optional custom weights for features
-        
-    Returns:
-        Similarity score (0-1)
-    """
     if feature_weights is None:
         # Default weights
         feature_weights = {
@@ -1354,23 +1210,12 @@ def calculate_track_similarity(
     
     return float(similarity)
 
-
 def find_most_similar_track(
     target_features: Dict,
     candidate_tracks: List[Dict],
     exclude_indices: Optional[List[int]] = None
 ) -> Tuple[int, float]:
-    """
-    Find most similar track to target
     
-    Args:
-        target_features: Target track features
-        candidate_tracks: List of candidate tracks
-        exclude_indices: Indices to exclude
-        
-    Returns:
-        Tuple of (index, similarity_score)
-    """
     exclude_set = set(exclude_indices or [])
     
     best_idx = -1
@@ -1392,7 +1237,6 @@ def find_most_similar_track(
     
     return best_idx, best_similarity
 
-
 # ============================================
 # MOOD TRANSITIONS
 # ============================================
@@ -1401,17 +1245,7 @@ def calculate_mood_transition_smoothness(
     mood1: str,
     mood2: str
 ) -> float:
-    """
-    Calculate how smooth a transition is between two moods
-    Based on mood similarity matrix
     
-    Args:
-        mood1: First mood
-        mood2: Second mood
-        
-    Returns:
-        Smoothness score (0-1, higher = smoother)
-    """
     # Mood similarity groups
     mood_groups = {
         'energetic': ['Energetic', 'Excited', 'Confident', 'Determined'],
@@ -1447,17 +1281,8 @@ def calculate_mood_transition_smoothness(
     
     return 0.5  # Neutral
 
-
 def analyze_playlist_transitions(tracks: List[Dict]) -> List[Dict]:
-    """
-    Analyze mood transitions throughout playlist
     
-    Args:
-        tracks: List of tracks with mood predictions
-        
-    Returns:
-        List of transition analyses
-    """
     transitions = []
     
     for i in range(len(tracks) - 1):
@@ -1490,13 +1315,12 @@ def analyze_playlist_transitions(tracks: List[Dict]) -> List[Dict]:
     
     return transitions
 
-
 # ============================================
 # UTILITY FUNCTIONS
 # ============================================
 
 def _get_default_features() -> Dict:
-    """Return neutral default features"""
+    
     return {
         'danceability': 0.5,
         'energy': 0.5,
@@ -1514,17 +1338,8 @@ def _get_default_features() -> Dict:
         }
     }
 
-
 def get_mood_description(mood: str) -> str:
-    """
-    Get human-readable description for mood
     
-    Args:
-        mood: Mood name
-        
-    Returns:
-        Description string
-    """
     descriptions = {
         "Happy": "Bright, upbeat, and positive vibes",
         "Sad": "Melancholic, emotional, low energy",
@@ -1542,14 +1357,8 @@ def get_mood_description(mood: str) -> str:
     
     return descriptions.get(mood, "Unknown mood")
 
-
 def get_model_info() -> Dict:
-    """
-    Get information about loaded model
     
-    Returns:
-        Model information dictionary
-    """
     return {
         'loaded': model_loaded,
         'model_path': MOOD_MODEL_PATH if model_loaded else None,
@@ -1562,21 +1371,12 @@ def get_model_info() -> Dict:
         'fallback_available': True
     }
 
-
 # ============================================
 # VALIDATION & DEBUGGING
 # ============================================
 
 def validate_mood_prediction(prediction: Dict) -> bool:
-    """
-    Validate mood prediction structure
     
-    Args:
-        prediction: Mood prediction dictionary
-        
-    Returns:
-        True if valid
-    """
     required_keys = ['primary_mood', 'all_moods', 'mood_scores', 'confidence']
     
     for key in required_keys:
@@ -1608,15 +1408,8 @@ def validate_mood_prediction(prediction: Dict) -> bool:
     
     return True
 
-
 def debug_prediction(features: Dict, prediction: Dict) -> None:
-    """
-    Print detailed debug information for prediction
     
-    Args:
-        features: Input features
-        prediction: Prediction result
-    """
     print("\n" + "="*60)
     print("🔍 MOOD PREDICTION DEBUG")
     print("="*60)
@@ -1644,7 +1437,6 @@ def debug_prediction(features: Dict, prediction: Dict) -> None:
     
     print("\n✅ Validation: " + ("PASS" if validate_mood_prediction(prediction) else "FAIL"))
     print("="*60 + "\n")
-
 
 # ============================================
 # INITIALIZATION

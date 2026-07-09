@@ -41,44 +41,37 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from . import cache_service
 
-
 # ============================================
 # CUSTOM EXCEPTIONS
 # ============================================
 
 class SpotifyServiceError(Exception):
-    """Base exception for Spotify service"""
+    
     pass
-
 
 class SpotifyAuthError(SpotifyServiceError):
-    """Authentication/authorization error"""
+    
     pass
 
-
 class SpotifyRateLimitError(SpotifyServiceError):
-    """Rate limit exceeded"""
+    
     def __init__(self, message: str, retry_after: int = 60):
         super().__init__(message)
         self.retry_after = retry_after
 
-
 class SpotifyNotFoundError(SpotifyServiceError):
-    """Resource not found"""
+    
     pass
-
 
 class SpotifyTokenExpired(SpotifyServiceError):
-    """Access token has expired"""
+    
     pass
-
 
 # ============================================
 # RATE LIMITER
 # ============================================
 
 class RateLimiter:
-    """Simple rate limiter to prevent API abuse"""
 
     def __init__(self):
         self.requests = defaultdict(list)
@@ -88,7 +81,7 @@ class RateLimiter:
         }
 
     async def check_limit(self, endpoint: str = 'default'):
-        """Check and enforce rate limits"""
+        
         now = time.time()
         limit, window = self.limits.get(endpoint, self.limits['default'])
 
@@ -106,9 +99,7 @@ class RateLimiter:
 
         self.requests[endpoint].append(now)
 
-
 rate_limiter = RateLimiter()
-
 
 # ============================================
 # CLIENT MANAGEMENT
@@ -117,17 +108,12 @@ rate_limiter = RateLimiter()
 # Global Spotify client
 sp_server: Optional[spotipy.Spotify] = None
 
-
 def _get_user_id_hash(access_token: str) -> str:
-    """
-    Generate stable, secure user identifier from token
-    Prevents cache key collisions and token exposure
-    """
+    
     return hashlib.sha256(access_token.encode()).hexdigest()[:16]
 
-
 def _handle_spotify_exception(e: Exception) -> None:
-    """Centralized exception handling"""
+    
     if isinstance(e, spotipy.exceptions.SpotifyException):
         if e.http_status == 401:
             raise SpotifyAuthError("Invalid or expired token. Please re-authenticate.")
@@ -144,21 +130,8 @@ def _handle_spotify_exception(e: Exception) -> None:
         raise SpotifyServiceError(f"Spotify API error: {e}")
     raise SpotifyServiceError(f"Unexpected error: {e}")
 
-
 def get_spotify_client(access_token: Optional[str] = None) -> spotipy.Spotify:
-    """
-    Get Spotify client with user token or server credentials
-
-    Args:
-        access_token: User's OAuth access token
-
-    Returns:
-        Configured Spotify client
-
-    Raises:
-        ValueError: If server credentials are missing
-        SpotifyAuthError: If token is invalid
-    """
+    
     if access_token:
         # Use user's access token (from frontend OAuth)
         try:
@@ -193,9 +166,8 @@ def get_spotify_client(access_token: Optional[str] = None) -> spotipy.Spotify:
 
     return sp_server
 
-
 # ============================================
-# USER DATA & PLAYLISTS - WITH FULL PAGINATION
+
 # ============================================
 
 async def get_user_playlists(
@@ -203,19 +175,7 @@ async def get_user_playlists(
     limit: int = 50,
     fetch_all: bool = True
 ) -> List[Dict]:
-    """
-    Get user's playlists from Spotify with FULL PAGINATION
-
-    Args:
-        access_token: User's Spotify access token
-        limit: Items per page (max 50, Spotify limit)
-        fetch_all: If True, fetches all playlists across pages
-
-    Returns:
-        Complete list of playlist dictionaries
-
-    Endpoint: GET /me/playlists
-    """
+    
     user_hash = _get_user_id_hash(access_token)
     cache_key = f"spotify:playlists:{user_hash}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -277,27 +237,12 @@ async def get_user_playlists(
         _handle_spotify_exception(e)
         return []
 
-
 async def get_playlist_tracks(
     playlist_id: str,
     access_token: str,
     include_unavailable: bool = False
 ) -> List[Dict]:
-    """
-    Get ALL tracks from a Spotify playlist with FULL PAGINATION
-
-    CRITICAL FIX: Handles playlists with 100+ tracks correctly
-
-    Args:
-        playlist_id: Spotify playlist ID
-        access_token: User's access token
-        include_unavailable: Whether to include unavailable/local tracks
-
-    Returns:
-        Complete list of track dictionaries
-
-    Endpoint: GET /playlists/{id}/tracks
-    """
+    
     cache_key = f"spotify:playlist_tracks:{playlist_id}"
     cached = await cache_service.get_from_cache(cache_key)
 
@@ -391,16 +336,11 @@ async def get_playlist_tracks(
         _handle_spotify_exception(e)
         return []
 
-
 async def get_track_info(
     track_id: str,
     access_token: Optional[str] = None
 ) -> Optional[Dict]:
-    """
-    Get track information from Spotify
-
-    Endpoint: GET /tracks/{id}
-    """
+    
     cache_key = f"spotify:track:{track_id}"
     cached = await cache_service.get_from_cache(cache_key)
 
@@ -451,16 +391,8 @@ async def get_track_info(
         _handle_spotify_exception(e)
         return None
 
-
 async def get_currently_playing(access_token: str) -> Optional[Dict]:
-    """
-    Get currently playing track with COMPLETE playback state
-
-    Returns all details: track, device, playback state, context
-
-    Endpoint: GET /me/player/currently-playing
-    Requires scope: user-read-currently-playing, user-read-playback-state
-    """
+    
     try:
         await rate_limiter.check_limit('playback')
         sp = get_spotify_client(access_token)
@@ -564,9 +496,8 @@ async def get_currently_playing(access_token: str) -> Optional[Dict]:
         _handle_spotify_exception(e)
         return None
 
-
 def _extract_device_info(device: Dict) -> Dict:
-    """Extract device information"""
+    
     return {
         'id': device.get('id'),
         'name': device.get('name'),
@@ -577,9 +508,8 @@ def _extract_device_info(device: Dict) -> Dict:
         'is_restricted': device.get('is_restricted', False)
     }
 
-
 def _extract_context(context: Optional[Dict]) -> Optional[Dict]:
-    """Extract playback context"""
+    
     if not context:
         return None
 
@@ -589,21 +519,12 @@ def _extract_context(context: Optional[Dict]) -> Optional[Dict]:
         'external_url': context.get('external_urls', {}).get('spotify')
     }
 
-
 async def get_user_top_tracks(
     access_token: str,
     time_range: str = 'medium_term',
     limit: int = 20
 ) -> List[Dict]:
-    """
-    Get user's top tracks
-
-    Endpoint: GET /me/top/tracks
-    Requires scope: user-top-read
-
-    Args:
-        time_range: 'short_term' (4 weeks), 'medium_term' (6 months), 'long_term' (years)
-    """
+    
     user_hash = _get_user_id_hash(access_token)
     cache_key = f"spotify:top_tracks:{user_hash}:{time_range}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -652,18 +573,12 @@ async def get_user_top_tracks(
         _handle_spotify_exception(e)
         return []
 
-
 async def get_user_top_artists(
     access_token: str,
     time_range: str = 'medium_term',
     limit: int = 20
 ) -> List[Dict]:
-    """
-    Get user's top artists
-
-    Endpoint: GET /me/top/artists
-    Requires scope: user-top-read
-    """
+    
     user_hash = _get_user_id_hash(access_token)
     cache_key = f"spotify:top_artists:{user_hash}:{time_range}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -705,17 +620,11 @@ async def get_user_top_artists(
         _handle_spotify_exception(e)
         return []
 
-
 async def get_recently_played(
     access_token: str,
     limit: int = 50
 ) -> List[Dict]:
-    """
-    Get recently played tracks
-
-    Endpoint: GET /me/player/recently-played
-    Requires scope: user-read-recently-played
-    """
+    
     user_hash = _get_user_id_hash(access_token)
     cache_key = f"spotify:recently_played:{user_hash}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -763,18 +672,12 @@ async def get_recently_played(
         _handle_spotify_exception(e)
         return []
 
-
 async def get_saved_tracks(
     access_token: str,
     limit: int = 50,
     fetch_all: bool = False
 ) -> List[Dict]:
-    """
-    Get user's saved/liked tracks with pagination support
-
-    Endpoint: GET /me/tracks
-    Requires scope: user-library-read
-    """
+    
     user_hash = _get_user_id_hash(access_token)
     cache_key = f"spotify:saved_tracks:{user_hash}"
 
@@ -836,16 +739,11 @@ async def get_saved_tracks(
         _handle_spotify_exception(e)
         return []
 
-
 async def batch_get_tracks(
     track_ids: List[str],
     access_token: Optional[str] = None
 ) -> List[Dict]:
-    """
-    Get multiple tracks in batch (up to 50 per request)
-
-    Endpoint: GET /tracks
-    """
+    
     if not track_ids:
         return []
 
@@ -892,32 +790,28 @@ async def batch_get_tracks(
         _handle_spotify_exception(e)
         return []
 
-
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
 
 def extract_track_artists_names(track: Dict) -> List[str]:
-    """Extract artist names from track dict"""
+    
     if 'artists' in track:
         return [artist['name'] for artist in track['artists']]
     return []
 
-
 def get_primary_artist_name(track: Dict) -> str:
-    """Get primary artist name"""
+    
     if 'artists' in track and track['artists']:
         return track['artists'][0]['name']
     return "Unknown Artist"
 
-
 def format_duration(duration_ms: int) -> str:
-    """Format duration from milliseconds to MM:SS"""
+    
     total_seconds = duration_ms // 1000
     minutes = total_seconds // 60
     seconds = total_seconds % 60
     return f"{minutes}:{seconds:02d}"
-
 
 # ============================================
 # CATALOG DISCOVERY (replaces deprecated /v1/recommendations)
@@ -945,12 +839,10 @@ MOOD_GENRE_SEEDS: Dict[str, List[str]] = {
 }
 ANY_MOOD_GENRES = ['pop', 'indie', 'rock', 'hip hop', 'electronic', 'r&b', 'alternative', 'folk']
 
-
 def _sample(seq: List, n: int) -> List:
     pool = list(seq)
     random.shuffle(pool)
     return pool[:n]
-
 
 async def search_catalog_for_mood(
     sp: spotipy.Spotify,
@@ -958,12 +850,7 @@ async def search_catalog_for_mood(
     count: int,
     exclude_ids: Optional[set] = None
 ) -> List[Dict]:
-    """
-    Pull real catalog tracks via genre-filtered search (GET /v1/search),
-    since GET /v1/recommendations is dead for most apps. Random offsets mean
-    repeated calls surface different parts of the catalog instead of the
-    same fixed results every time.
-    """
+    
     exclude_ids = exclude_ids or set()
     genres = MOOD_GENRE_SEEDS.get(mood, [mood.lower()]) if mood else _sample(ANY_MOOD_GENRES, 3)
 
@@ -1010,7 +897,6 @@ async def search_catalog_for_mood(
 
     return _sample(results, min(count, len(results)))
 
-
 async def get_recommendations(
     seed_tracks: Optional[List[str]] = None,
     seed_artists: Optional[List[str]] = None,
@@ -1020,15 +906,7 @@ async def get_recommendations(
     limit: int = 20,
     access_token: Optional[str] = None
 ) -> List[Dict]:
-    """
-    Get track recommendations from Spotify.
-
-    Tries the real /v1/recommendations endpoint first (works if this app
-    still has Extended Quota Mode). If that fails — which it will for the
-    vast majority of apps registered after Nov 2024 — falls back to
-    genre-filtered catalog search so this still returns real, varied tracks
-    instead of an empty list.
-    """
+    
     try:
         sp = get_spotify_client(access_token)
 
@@ -1097,22 +975,11 @@ async def get_recommendations(
         print(f"⚠️ Error getting Spotify recommendations: {e}")
         return []
 
-
 async def get_audio_features(
     track_ids: List[str],
     access_token: Optional[str] = None
 ) -> List[Optional[Dict]]:
-    """
-    Get audio features for multiple track IDs from Spotify.
-
-    NOTE: GET /v1/audio-features is deprecated for apps without Extended
-    Quota Mode and has no public replacement. This will 403 for most apps —
-    that failure is now surfaced clearly (logged) rather than silently
-    swallowed. Callers should check for an all-None result and treat it as
-    "features unavailable", relying on mood tags from catalog search or a
-    precomputed feature source (e.g. the MongoDB catalog in
-    db_recommendation_service.py) instead of valence/energy filtering.
-    """
+    
     if not track_ids:
         return []
     try:
@@ -1153,19 +1020,12 @@ async def get_audio_features(
               f"for most apps as of Nov 2024): {e}")
         return [None] * len(track_ids)
 
-
 async def search_tracks(
     query: str,
     limit: int = 20,
     access_token: Optional[str] = None
 ) -> List[Dict]:
-    """
-    Search for tracks on Spotify.
-
-    Endpoint: GET /search (cached, rate-limited version — this is the single
-    canonical implementation; a duplicate, uncached definition further down
-    in the original file used to silently shadow this one).
-    """
+    
     cache_key = f"spotify:search:{query}:{limit}"
     cached = await cache_service.get_from_cache(cache_key)
 
@@ -1212,16 +1072,12 @@ async def search_tracks(
         _handle_spotify_exception(e)
         return []
 
-
 # ============================================
 # TESTING & DIAGNOSTICS
 # ============================================
 
 async def test_spotify_service(access_token: str):
-    """
-    Comprehensive test suite for Spotify service
-    Tests all major endpoints with error handling
-    """
+    
     print("\n" + "="*60)
     print("🧪 Testing Spotify Service (Production-Ready)")
     print("="*60)
@@ -1437,7 +1293,6 @@ async def test_spotify_service(access_token: str):
 
     return test_results
 
-
 # ============================================
 # REQUIRED SPOTIFY SCOPES
 # ============================================
@@ -1466,24 +1321,12 @@ REQUIRED_SCOPES = [
     'user-library-modify',
 ]
 
-
 def get_required_scopes() -> List[str]:
-    """
-    Get list of all required Spotify OAuth scopes
-
-    Returns:
-        List of scope strings for OAuth authorization
-    """
+    
     return REQUIRED_SCOPES
 
-
 def verify_token_scopes(access_token: str) -> Dict[str, Any]:
-    """
-    Verify what scopes are available on the current token
-
-    Note: This requires making an API call that will fail if scopes are insufficient
-    Returns information about what endpoints will work
-    """
+    
     sp = get_spotify_client(access_token)
 
     available_endpoints = {

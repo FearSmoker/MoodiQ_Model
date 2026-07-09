@@ -25,7 +25,6 @@ from services.spotify_service import (
 import time
 import traceback
 
-
 last_log_times = {}
 
 def log_rate_limited(key: str, message: str):
@@ -36,53 +35,46 @@ def log_rate_limited(key: str, message: str):
 
 router = APIRouter()
 
-
 class TrackMoodRequest(BaseModel):
-    """Request model for single track mood analysis"""
+    
     track_name: str
     artist_name: str
     user_id: Optional[str] = None
     genre: Optional[str] = None
 
-
 class SpotifyTrackMoodRequest(BaseModel):
-    """Request model for Spotify track mood analysis"""
+    
     track_id: str
     user_id: Optional[str] = None
 
-
 class TrackMoodResponse(BaseModel):
-    """Response model for track mood - NOW WITH MULTI-MOOD SUPPORT"""
+    
     track_name: str
     artist_name: str
     mood: Dict[str, Any]  # Contains primary_mood, all_moods, mood_scores
     features: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
 
-
 class PlaylistMoodRequest(BaseModel):
-    """Request model for playlist mood analysis"""
+    
     tracks: List[Dict[str, str]]
     user_id: Optional[str] = None
 
-
 class SpotifyPlaylistMoodRequest(BaseModel):
-    """Request model for Spotify playlist mood analysis"""
+    
     playlist_id: str
     user_id: Optional[str] = None
     include_unavailable: Optional[bool] = False
 
-
 class PlaylistMoodResponse(BaseModel):
-    """Response model for playlist mood - UPDATED FOR 12 MOODS"""
+    
     tracks: List[Dict[str, Any]]
     moodDistribution: Dict[str, float]  # Now includes all 12 moods
     overallMood: str
 
-
 # Helper functions
 def extract_access_token(authorization: Optional[str]) -> str:
-    """Extract and validate access token"""
+    
     if not authorization or not authorization.startswith('Bearer '):
         raise HTTPException(
             status_code=401,
@@ -90,9 +82,8 @@ def extract_access_token(authorization: Optional[str]) -> str:
         )
     return authorization.replace('Bearer ', '').strip()
 
-
 def handle_spotify_error(e: Exception) -> None:
-    """Convert Spotify service exceptions to HTTP exceptions"""
+    
     if isinstance(e, SpotifyAuthError):
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
     elif isinstance(e, SpotifyRateLimitError):
@@ -106,13 +97,8 @@ def handle_spotify_error(e: Exception) -> None:
     elif isinstance(e, SpotifyServiceError):
         raise HTTPException(status_code=500, detail=f"Spotify service error: {str(e)}")
 
-
 def format_mood_response(mood_data: Dict) -> Dict:
-    """
-    Format mood data for backward compatibility
-    Ensures both old (single mood) and new (multi-mood) formats work
-    """
-    # Extract primary mood (for backward compatibility)
+
     primary_mood = mood_data.get('primary_mood') or mood_data.get('fused_mood') or 'Unknown'
     
     # Get all moods (new format)
@@ -132,12 +118,10 @@ def format_mood_response(mood_data: Dict) -> Dict:
         'source': mood_data.get('source', 'ml_model_multi_tag'),
         'scores': mood_data.get('scores', {}),
         'num_tags': len(all_moods),
-        
-        # Backward compatibility fields
+
         'fused_mood': primary_mood,  # Old API compatibility
         'audio_mood': mood_data.get('audio_mood', mood_data.get('base_mood', primary_mood)),
     }
-
 
 # Original Multi-API endpoints
 @router.post("/track", response_model=TrackMoodResponse)
@@ -145,7 +129,7 @@ async def get_track_mood(
     request: TrackMoodRequest,
     authorization: str = Header(None)
 ):
-    """Analyze mood for a single track using multi-API approach - NOW WITH MULTI-MOOD TAGS"""
+    
     cache_key = f"track:mood:{request.track_name}:{request.artist_name}:{request.user_id or 'global'}"
     
     try:
@@ -244,13 +228,12 @@ async def get_track_mood(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/playlist", response_model=PlaylistMoodResponse)
 async def get_playlist_mood(
     request: PlaylistMoodRequest,
     authorization: str = Header(None)
 ):
-    """Analyze mood for entire playlist - NOW WITH 12-MOOD DISTRIBUTION"""
+    
     try:
         print(f"\n{'='*60}")
         print(f"🎵 ANALYZING PLAYLIST: {len(request.tracks)} tracks")
@@ -327,7 +310,7 @@ async def get_playlist_mood(
                     "name": track_name,
                     "artist": artist_name,
                     "features": audio_features,
-                    "mood": primary_mood,  # For backward compatibility
+                    "mood": primary_mood,  
                     "primary_mood": primary_mood,
                     "all_moods": all_moods,
                     "mood_scores": mood_data.get('mood_scores', {}),
@@ -368,14 +351,13 @@ async def get_playlist_mood(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # Spotify-specific endpoints
 @router.post("/spotify/track", response_model=Dict[str, Any])
 async def get_spotify_track_mood(
     request: SpotifyTrackMoodRequest,
     authorization: str = Header(None)
 ):
-    """Analyze mood for a Spotify track - NOW WITH MULTI-MOOD TAGS"""
+    
     try:
         access_token = extract_access_token(authorization)
         
@@ -415,13 +397,12 @@ async def get_spotify_track_mood(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/spotify/currently-playing")
 async def get_currently_playing_mood(
     authorization: str = Header(None),
     user_id: Optional[str] = None
 ):
-    """Analyze mood of currently playing track - WITH MULTI-MOOD SUPPORT"""
+    
     try:
         access_token = extract_access_token(authorization)
         
@@ -442,7 +423,7 @@ async def get_currently_playing_mood(
         # NOTE: Spotify's `progress_ms` is already the live, up-to-the-moment
         # playback position computed by Spotify at response time. `timestamp`
         # is "when playback state was last changed" (play/pause/seek/skip),
-        # NOT "when this response was generated" — adding (now - timestamp)
+        
         # on top of progress_ms double-counts elapsed time and makes the
         # reported position drift further and further ahead of real playback
         # the longer it's been since the last seek/play event. Trust
@@ -470,7 +451,7 @@ async def get_currently_playing_mood(
 
         # ------------------------------------------------------------------
         # Reuse the cached analysis for this track/user if we already have
-        # one. Previously, Steps 2-5 (audio features -> lyrics -> genre ->
+        
         # model prediction) ran on EVERY poll (every ~10s), even for the
         # exact same currently-playing song. Any transient variance or
         # partial failure in those 4 external calls produced a *different*
@@ -478,7 +459,7 @@ async def get_currently_playing_mood(
         # "Now Playing" card to flicker between different mood tags, and
         # also seeded the live-history sorted set (used for the Live Mood
         # Graph) with inconsistent values for a single song.
-        #
+        
         # We still write a fresh history point on every poll below (so the
         # graph keeps getting new timestamped data and stays "live"), but we
         # now source it from the SAME cached mood/features for as long as
@@ -571,7 +552,7 @@ async def get_currently_playing_mood(
                         'energy': audio_features.get('energy', 0.5)
                     }
                 }
-                # Never cache a fallback result - a transient failure
+                
                 # shouldn't get "stuck" and stabilized for the rest of the
                 # song. The next poll will retry the full pipeline.
 
@@ -659,13 +640,12 @@ async def get_currently_playing_mood(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to analyze currently playing track: {str(e)}")
 
-
 @router.post("/spotify/playlist", response_model=Dict[str, Any])
 async def get_spotify_playlist_mood(
     request: SpotifyPlaylistMoodRequest,
     authorization: str = Header(None)
 ):
-    """Analyze mood for entire Spotify playlist - WITH 12-MOOD DISTRIBUTION"""
+    
     try:
         access_token = extract_access_token(authorization)
         
@@ -751,7 +731,7 @@ async def get_spotify_playlist_mood(
                     "external_url": track.get('external_url'),
                     "images": track['album'].get('images', []),
                     "added_at": track.get('added_at'),
-                    "mood": primary_mood,  # Backward compatibility
+                    "mood": primary_mood,  
                     "primary_mood": primary_mood,
                     "all_moods": all_moods,
                     "mood_scores": mood_data.get('mood_scores', {}),
@@ -811,7 +791,7 @@ async def get_user_playlists(
     authorization: str = Header(None),
     fetch_all: bool = True
 ):
-    """Get user's Spotify playlists"""
+    
     try:
         access_token = extract_access_token(authorization)
         
@@ -832,14 +812,13 @@ async def get_user_playlists(
         print(f"❌ Error getting user playlists: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ============================================
 # UTILITY ENDPOINTS
 # ============================================
 
 @router.post("/search-and-analyze")
 async def search_and_analyze(request: Dict[str, Any]):
-    """Search for a track and analyze its mood (Multi-API) - WITH MULTI-MOOD SUPPORT"""
+    
     try:
         query = request.get('query')
         user_id = request.get('user_id')
@@ -875,10 +854,9 @@ async def search_and_analyze(request: Dict[str, Any]):
         print(f"❌ Search and analyze error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/batch-analyze")
 async def batch_analyze_tracks(request: Dict[str, Any]):
-    """Batch analyze multiple tracks efficiently - WITH MULTI-MOOD SUPPORT"""
+    
     try:
         tracks = request.get('tracks', [])
         user_id = request.get('user_id')
@@ -908,7 +886,7 @@ async def batch_analyze_tracks(request: Dict[str, Any]):
 
 @router.get("/health")
 async def health_check():
-    """Health check endpoint - UPDATED FOR 12 MOODS"""
+    
     model_loaded = model_service.mood_model is not None
     cache_connected = cache_service.is_connected()
     ytmusic_available = music_service.ytmusic is not None
@@ -1020,10 +998,9 @@ async def health_check():
         "required_spotify_scopes": spotify_service.get_required_scopes()
     }
 
-
 @router.get("/spotify/test-connection")
 async def test_spotify_connection(authorization: str = Header(None)):
-    """Test Spotify API connection and token validity"""
+    
     try:
         access_token = extract_access_token(authorization)
         
@@ -1076,10 +1053,9 @@ async def test_spotify_connection(authorization: str = Header(None)):
         print(f"❌ Connection test failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/spotify/rate-limit-status")
 async def get_rate_limit_status():
-    """Check current rate limit status"""
+    
     try:
         rate_limiter = spotify_service.rate_limiter
         
@@ -1111,14 +1087,13 @@ async def get_rate_limit_status():
         print(f"❌ Rate limit status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/spotify/clear-cache")
 async def clear_spotify_cache(
     authorization: str = Header(None),
     cache_type: Optional[str] = None,
     user_id: Optional[str] = None
 ):
-    """Clear Spotify-related cache entries for a user"""
+    
     try:
         cleared_keys = []
         errors = []
@@ -1156,10 +1131,9 @@ async def clear_spotify_cache(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/debug/endpoints")
 async def list_available_endpoints():
-    """List all available API endpoints with descriptions - UPDATED FOR MULTI-MOOD"""
+    
     return {
         "endpoints": {
             "multi_api": {
@@ -1205,10 +1179,9 @@ async def list_available_endpoints():
         }
     }
 
-
 @router.get("/moods/list")
 async def list_available_moods():
-    """List all available moods with their profiles and mappings"""
+    
     try:
         moods_info = {}
         
@@ -1243,7 +1216,6 @@ async def list_available_moods():
     except Exception as e:
         print(f"❌ Error listing moods: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================================
 # EXCEPTION HANDLERS NOTE

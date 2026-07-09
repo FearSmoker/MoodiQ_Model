@@ -28,12 +28,8 @@ from services.db_recommendation_service import db_recommendation_service
 
 router = APIRouter()
 
-
 class FeedbackRequest(BaseModel):
-    """
-    User feedback for mood prediction correction.
-    Now supports 12 extended moods + multi-tag feedback
-    """
+    
     user_id: str
     track_id: str
     feedback_mood: str  # The correct mood according to user (can be any of 12 moods)
@@ -41,11 +37,8 @@ class FeedbackRequest(BaseModel):
     playlist_id: Optional[str] = None
     timestamp: Optional[str] = None
 
-
 class RecommendationRequest(BaseModel):
-    """
-    Request model for hybrid recommendations with multi-mood support
-    """
+    
     seed_tracks: Optional[List[str]] = []
     seed_genres: Optional[List[str]] = []
     target_valence: Optional[float] = None
@@ -55,25 +48,20 @@ class RecommendationRequest(BaseModel):
     access_token: Optional[str] = None
     limit: int = 20
 
-
 class NLPCommandRequest(BaseModel):
-    """
-    Natural language command processing.
-    """
+    
     command: str
     context: Optional[Dict[str, Any]] = {}
     user_id: str
 
-
 class BatchRetrainingRequest(BaseModel):
-    """Request for batch retraining with user feedback"""
+    
     user_id: str
     min_samples: int = 10
     force: bool = False
 
-
 class BehaviorLogRequest(BaseModel):
-    """Log implicit user behavior for learning"""
+    
     user_id: str
     track_id: str
     action: str  # "skip", "replay", "like", "add_to_playlist"
@@ -81,19 +69,13 @@ class BehaviorLogRequest(BaseModel):
     time_of_day: Optional[str] = None  # "morning", "afternoon", "evening", "night"
     current_mood: Optional[str] = None  # User's current mood context
 
-
 # ============================================
 # FEEDBACK SYSTEM (12 MOODS + MULTI-TAG)
 # ============================================
 
 @router.post("/feedback")
 async def submit_mood_feedback(request: FeedbackRequest):
-    """
-    Accept user feedback for mood predictions.
-    NOW SUPPORTS: 12 extended moods + multi-tag feedback
-
-    This endpoint is called when users correct mood predictions.
-    """
+    
     try:
         print(f"📝 Received feedback from user {request.user_id}: "
               f"Track {request.track_id} -> {request.feedback_mood}")
@@ -115,7 +97,6 @@ async def submit_mood_feedback(request: FeedbackRequest):
                         detail=f"Invalid mood in multi-tag feedback: {mood}"
                     )
 
-        # 1. Immediate cache override for this user
         user_override_key = f"user_model:{request.user_id}:track:{request.track_id}"
 
         # Store primary mood
@@ -137,7 +118,6 @@ async def submit_mood_feedback(request: FeedbackRequest):
 
         print(f"✅ User override cached: {user_override_key} = {request.feedback_mood}")
 
-        # 2. Store in feedback log for batch retraining
         feedback_log_key = f"feedback_log:{request.user_id}:{datetime.utcnow().isoformat()}"
 
         feedback_data = {
@@ -155,7 +135,6 @@ async def submit_mood_feedback(request: FeedbackRequest):
             expiration=86400 * 90  # Keep feedback logs for 90 days
         )
 
-        # 3. Update user preference statistics (12 moods)
         user_stats_key = f"user_stats:{request.user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {
             "feedback_count": 0,
@@ -201,7 +180,6 @@ async def submit_mood_feedback(request: FeedbackRequest):
         print(f"📊 User stats updated: {user_stats['feedback_count']} total feedbacks")
         print(f"🎨 Mood diversity: {user_stats['mood_diversity']} different moods")
 
-        # 4. Check if user has enough feedback for auto-retraining suggestion
         suggest_retrain = user_stats["feedback_count"] >= 10 and user_stats["feedback_count"] % 10 == 0
 
         return {
@@ -231,29 +209,13 @@ async def submit_mood_feedback(request: FeedbackRequest):
             "error": str(e)
         }
 
-
 # ============================================
-# HYBRID RECOMMENDATIONS (MULTI-MOOD)
+
 # ============================================
 
 @router.post("/recommend")
 async def get_hybrid_recommendations(request: RecommendationRequest):
-    """
-    Generate personalized recommendations using hybrid model.
-    NOW SUPPORTS: Multi-mood targeting and 12 extended moods
-
-    FIXED: previously every track fell back to primary_mood="Unknown" because
-    Spotify's audio-features endpoint is deprecated for most apps (see
-    spotify_service.get_audio_features). Mood resolution order is now:
-      1. User's own cached override for this track
-      2. Real Spotify audio features, if this app happens to have them
-      3. Catalog-search mood tag (from spotify_service.get_recommendations'
-         genre-search fallback)
-      4. db_recommendation_service (MongoDB precomputed features) — the
-         vector-search engine that already existed in this codebase but was
-         never actually called from any route
-      5. Simple rule-based prediction, only if we do have real features
-    """
+    
     try:
         print(f"🎯 Generating recommendations for user {request.user_id}")
 
@@ -261,11 +223,8 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
         user_stats_key = f"user_stats:{request.user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key) or {}
 
-        # Build personalized recommendations based on user's mood preferences (12 moods)
         user_mood_preferences = user_stats.get("mood_corrections", {})
 
-        # Use Spotify's recommendation system as base (now with catalog-search fallback
-        # baked into spotify_service.get_recommendations, so this returns real, varied
         # tracks even for apps without Extended Quota Mode)
         spotify_recommendations = await spotify_service.get_recommendations(
             seed_tracks=request.seed_tracks[:5] if request.seed_tracks else None,
@@ -452,12 +411,8 @@ async def get_hybrid_recommendations(request: RecommendationRequest):
             detail=f"ML recommendations unavailable: {str(e)}"
         )
 
-
 def _simple_mood_prediction(features: Dict) -> str:
-    """
-    Simple rule-based mood prediction using extended moods.
-    Fallback when ML prediction fails.
-    """
+    
     valence = features.get('valence', 0.5)
     energy = features.get('energy', 0.5)
     danceability = features.get('danceability', 0.5)
@@ -491,7 +446,6 @@ def _simple_mood_prediction(features: Dict) -> str:
     else:
         return "Relaxed"
 
-
 # ============================================
 # MODEL RETRAINING (12 MOODS)
 # ============================================
@@ -501,10 +455,7 @@ async def trigger_model_retraining(
     request: BatchRetrainingRequest,
     background_tasks: BackgroundTasks
 ):
-    """
-    Trigger model retraining with accumulated feedback.
-    NOW SUPPORTS: 12 extended moods and multi-tag learning
-    """
+    
     try:
         user_id = request.user_id
 
@@ -550,17 +501,12 @@ async def trigger_model_retraining(
             detail=f"Model retraining failed: {str(e)}"
         )
 
-
 async def _retrain_user_model(user_id: str, feedback_count: int):
-    """
-    Background task to retrain user-specific model layer.
-    NOW SUPPORTS: 12 extended moods with enhanced feature adjustments
-    """
+    
     try:
         print(f"🔬 Starting background retraining for user {user_id}")
         print(f"📚 Collecting {feedback_count} feedback samples...")
 
-        # 1. Collect all feedback logs for this user
         feedback_pattern = f"feedback_log:{user_id}:*"
         feedback_keys = await cache_service.get_keys_by_pattern(feedback_pattern, limit=1000)
 
@@ -570,14 +516,12 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
             print(f"⚠️ Not enough feedback entries found: {len(feedback_keys)}")
             return
 
-        # 2. Extract feedback data
         feedback_samples = []
         for key in feedback_keys:
             feedback = await cache_service.get_from_cache(key)
             if feedback:
                 feedback_samples.append(feedback)
 
-        # 3. Build mood preference weights (12 moods)
         mood_weights = {}
         mood_counts = {}
 
@@ -597,7 +541,6 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
 
         print(f"⚖️ Calculated mood weights (12 moods): {mood_weights}")
 
-        # 4. Calculate user-specific feature preferences (Enhanced for 12 moods)
         feature_adjustments = {
             'valence_bias': 0.0,
             'energy_bias': 0.0,
@@ -696,17 +639,13 @@ async def _retrain_user_model(user_id: str, feedback_count: int):
         import traceback
         traceback.print_exc()
 
-
 # ============================================
 # USER STATS & ANALYTICS (12 MOODS)
 # ============================================
 
 @router.get("/user/{user_id}/stats")
 async def get_user_learning_stats(user_id: str):
-    """
-    Get user's personalization statistics.
-    NOW SHOWS: 12 mood distribution and diversity metrics
-    """
+    
     try:
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key)
@@ -784,10 +723,7 @@ async def get_user_learning_stats(user_id: str):
 
 @router.delete("/user/{user_id}/reset")
 async def reset_user_personalization(user_id: str):
-    """
-    Reset user's personalization data.
-    Useful for testing or if user wants to start fresh.
-    """
+    
     try:
         print(f"🗑️ Resetting personalization for user {user_id}")
 
@@ -832,10 +768,7 @@ async def reset_user_personalization(user_id: str):
 
 @router.get("/user/{user_id}/model")
 async def get_user_personalized_model(user_id: str):
-    """
-    Get the user's personalized model parameters.
-    Shows the learned preferences and adjustments for 12 moods.
-    """
+    
     try:
         user_model_key = f"user_model:{user_id}:trained"
         trained_model = await cache_service.get_from_cache(user_model_key)
@@ -881,11 +814,7 @@ async def get_user_personalized_model(user_id: str):
 
 @router.post("/batch-feedback")
 async def submit_batch_feedback(requests: List[FeedbackRequest]):
-    """
-    Submit multiple feedback entries at once.
-    Useful for importing historical user data or bulk corrections.
-    NOW SUPPORTS: Multi-mood feedback in batch
-    """
+    
     try:
         results = []
 
@@ -925,11 +854,7 @@ async def submit_batch_feedback(requests: List[FeedbackRequest]):
 
 @router.post("/behavior/log")
 async def log_user_behavior(request: BehaviorLogRequest):
-    """
-    Log implicit behavior for learning.
-    Tracks user actions to improve recommendations without explicit feedback.
-    NOW SUPPORTS: Context-aware logging with mood information
-    """
+    
     try:
         behavior_key = f"behavior:{request.user_id}:{datetime.utcnow().date()}"
 
@@ -996,7 +921,6 @@ async def log_user_behavior(request: BehaviorLogRequest):
 
         await cache_service.set_in_cache(user_stats_key, user_stats, expiration=86400*365)
 
-        # Implicit learning: If user skips a lot of a certain mood, adjust preferences
         if skip_count > 15 and request.current_mood:
             # Log pattern for future model adjustment
             pattern_key = f"behavior_pattern:{request.user_id}:skip_mood:{request.current_mood}"
@@ -1030,13 +954,9 @@ async def log_user_behavior(request: BehaviorLogRequest):
             "error": str(e)
         }
 
-
 @router.get("/user/{user_id}/mood-insights")
 async def get_user_mood_insights(user_id: str):
-    """
-    Get detailed mood insights and patterns for the user.
-    Shows which moods they prefer, when they listen to them, etc.
-    """
+    
     try:
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key)
@@ -1110,11 +1030,8 @@ async def get_user_mood_insights(user_id: str):
             detail=f"Failed to fetch mood insights: {str(e)}"
         )
 
-
 def _generate_mood_recommendations(mood_corrections: Dict, avg_features: Dict) -> List[str]:
-    """
-    Generate personalized mood recommendations based on user patterns.
-    """
+    
     recommendations = []
 
     # Sort moods by preference
@@ -1173,18 +1090,15 @@ def _generate_mood_recommendations(mood_corrections: Dict, avg_features: Dict) -
 
     return recommendations
 
-
 @router.get("/health")
 async def health_check():
-    """
-    Health check endpoint with extended mood system info
-    """
+    
     model_loaded = model_service.mood_model is not None
     cache_connected = cache_service.is_connected()
 
     # Surface whether the MongoDB catalog fallback is actually reachable —
     # previously this service was never initialized/called anywhere, so a
-    # misconfigured MONGO_URI would go unnoticed until a recommendation request failed.
+    
     try:
         await db_recommendation_service.initialize()
         mongo_connected = db_recommendation_service._initialized
@@ -1218,13 +1132,9 @@ async def health_check():
         "version": "2.1_mongo_fallback"
     }
 
-
 @router.get("/moods/available")
 async def get_available_moods():
-    """
-    Get list of all available moods with their profiles.
-    Useful for frontend mood selector UI.
-    """
+    
     try:
         moods_info = []
 
@@ -1253,11 +1163,8 @@ async def get_available_moods():
             detail=f"Failed to fetch available moods: {str(e)}"
         )
 
-
 def _get_mood_description(mood_name: str) -> str:
-    """
-    Get human-readable description for each mood.
-    """
+    
     descriptions = {
         "Relaxed": "Calm and peaceful tracks perfect for unwinding",
         "Focused": "Concentration-friendly music for work or study",

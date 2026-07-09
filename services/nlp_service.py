@@ -34,18 +34,8 @@ ACTIVITY_LABELS = [
     "driving", "commute"
 ]
 
-
 async def classify_intent_hf(command: str) -> Tuple[str, float]:
-    """
-    Classify user intent using HuggingFace zero-shot classification.
-    NOW PROPERLY ASYNC - won't block the event loop.
     
-    Args:
-        command: User's natural language command
-        
-    Returns:
-        Tuple of (intent, confidence_score)
-    """
     # Check cache first
     cache_key = f"nlp:intent:{command.lower()}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -106,18 +96,8 @@ async def classify_intent_hf(command: str) -> Tuple[str, float]:
         print(f"⚠️ Unexpected NLP error: {e}")
         return fallback_intent_classification(command)
 
-
 async def extract_mood_hf(command: str) -> Optional[str]:
-    """
-    Extract mood from command using zero-shot classification.
-    NOW PROPERLY ASYNC.
     
-    Args:
-        command: User's command
-        
-    Returns:
-        Detected mood or None
-    """
     cache_key = f"nlp:mood:{command.lower()}"
     cached = await cache_service.get_from_cache(cache_key)
     
@@ -163,18 +143,8 @@ async def extract_mood_hf(command: str) -> Optional[str]:
         print(f"⚠️ Mood extraction error: {e}")
         return fallback_mood_extraction(command)
 
-
 async def extract_activity_hf(command: str) -> Optional[str]:
-    """
-    Extract activity from command.
-    NOW PROPERLY ASYNC.
     
-    Args:
-        command: User's command
-        
-    Returns:
-        Detected activity or None
-    """
     cache_key = f"nlp:activity:{command.lower()}"
     cached = await cache_service.get_from_cache(cache_key)
     
@@ -219,11 +189,8 @@ async def extract_activity_hf(command: str) -> Optional[str]:
         print(f"⚠️ Activity extraction error: {e}")
         return fallback_activity_extraction(command)
 
-
 def fallback_intent_classification(command: str) -> Tuple[str, float]:
-    """
-    Rule-based fallback when HuggingFace API is unavailable.
-    """
+    
     command_lower = command.lower()
     
     if any(word in command_lower for word in ['analyze', 'check', 'what is', 'mood of']):
@@ -246,11 +213,8 @@ def fallback_intent_classification(command: str) -> Tuple[str, float]:
     
     return "unknown", 0.2
 
-
 def fallback_mood_extraction(command: str) -> Optional[str]:
-    """
-    Rule-based mood extraction fallback.
-    """
+    
     command_lower = command.lower()
     
     if any(word in command_lower for word in ['happy', 'upbeat', 'joyful', 'cheerful']):
@@ -264,11 +228,8 @@ def fallback_mood_extraction(command: str) -> Optional[str]:
     
     return None
 
-
 def fallback_activity_extraction(command: str) -> Optional[str]:
-    """
-    Rule-based activity extraction fallback.
-    """
+    
     command_lower = command.lower()
     
     if any(word in command_lower for word in ['workout', 'gym', 'exercise']):
@@ -284,29 +245,15 @@ def fallback_activity_extraction(command: str) -> Optional[str]:
     
     return None
 
-
 async def process_command_advanced(command: str, context: Dict = None) -> Dict:
-    """
-    Process natural language command with advanced NLP.
-    NOW PROPERLY ASYNC - all HTTP calls are non-blocking.
     
-    Args:
-        command: User's natural language command
-        context: Optional context (user_id, current_playlist, etc.)
-        
-    Returns:
-        Structured command with intent, parameters, and response
-    """
     print(f"🗣️ Processing advanced NLP: {command}")
-    
-    # 1. Classify intent
+
     intent, confidence = await classify_intent_hf(command)
-    
-    # 2. Extract entities
+
     mood = await extract_mood_hf(command)
     activity = await extract_activity_hf(command)
-    
-    # 3. Build parameters
+
     parameters = {}
     response_text = ""
     
@@ -364,7 +311,6 @@ async def process_command_advanced(command: str, context: Dict = None) -> Dict:
         "method": "huggingface_api" if confidence > 0.5 else "fallback"
     }
 
-
 # Synonym mapping for better understanding
 MOOD_SYNONYMS = {
     "joyful": "Happy",
@@ -383,7 +329,7 @@ MOOD_SYNONYMS = {
 }
 
 def expand_mood_with_synonyms(mood: Optional[str]) -> Optional[str]:
-    """Map synonyms to standard mood classes."""
+    
     if not mood:
         return None
     

@@ -24,11 +24,9 @@ import os
 import json
 from datetime import datetime
 
-
 # Configuration
 # This will be overridden dynamically after loading the dataset
 MOOD_CLASSES = []
-
 
 AUDIO_FEATURES = [
     'valence', 'energy', 'danceability', 'acousticness',
@@ -43,16 +41,8 @@ LEARNING_RATE = 0.001
 DROPOUT_RATE = 0.3
 EARLY_STOPPING_PATIENCE = 15
 
-
 def create_sample_dataset(n_samples=10000, save_path='sample_dataset.csv'):
-    """
-    Create a synthetic dataset for training if you don't have real labeled data.
-    Replace this with your actual labeled dataset.
     
-    Dataset format:
-        - Columns: valence, energy, danceability, ..., mood (label)
-        - mood: One of ["Happy", "Sad", "Calm", "Energetic", "Angry", "Focus"]
-    """
     print(f"Creating sample dataset with {n_samples} samples...")
     
     np.random.seed(42)
@@ -141,17 +131,8 @@ def create_sample_dataset(n_samples=10000, save_path='sample_dataset.csv'):
     
     return df
 
-
 def load_and_preprocess_data(dataset_path):
-    """
-    Load and preprocess the dataset.
     
-    Args:
-        dataset_path: Path to CSV file with columns: audio features + 'mood'
-    
-    Returns:
-        X_train, X_test, y_train, y_test, scaler, label_encoder
-    """
     print(f"Loading dataset from {dataset_path}...")
     
     if not os.path.exists(dataset_path):
@@ -200,21 +181,8 @@ def load_and_preprocess_data(dataset_path):
     
     return X_train, X_test, y_train, y_test, scaler, label_encoder
 
-
 def build_model(input_dim, num_classes):
-    """
-    Build the neural network architecture.
     
-    Architecture:
-        - Input layer (12 features)
-        - Dense layer (128 units, ReLU)
-        - Dropout (0.3)
-        - Dense layer (64 units, ReLU)
-        - Dropout (0.3)
-        - Dense layer (32 units, ReLU)
-        - Dropout (0.2)
-        - Output layer (6 classes, Softmax)
-    """
     print("\nBuilding model architecture...")
     
     model = keras.Sequential([
@@ -249,11 +217,8 @@ def build_model(input_dim, num_classes):
     
     return model
 
-
 def train_model(model, X_train, y_train, X_test, y_test):
-    """
-    Train the model with callbacks.
-    """
+    
     print("\nTraining model...")
     
     # Callbacks
@@ -291,11 +256,8 @@ def train_model(model, X_train, y_train, X_test, y_test):
     
     return history
 
-
 def evaluate_model(model, X_test, y_test, label_encoder):
-    """
-    Evaluate model performance and create visualizations.
-    """
+    
     print("\nEvaluating model...")
     
     # Predictions
@@ -337,11 +299,8 @@ def evaluate_model(model, X_test, y_test, label_encoder):
     
     return y_pred, y_pred_probs
 
-
 def plot_training_history(history):
-    """
-    Plot training history.
-    """
+    
     fig, axes = plt.subplots(1, 2, figsize=(15, 5))
     
     # Loss
@@ -366,11 +325,8 @@ def plot_training_history(history):
     plt.savefig('training_history.png', dpi=300)
     print("✅ Training history saved to training_history.png")
 
-
 def export_to_onnx(model, output_path, input_shape):
-    """
-    Export trained Keras model to ONNX format.
-    """
+    
     print(f"\nExporting model to ONNX format...")
     
     # Create the models directory if it doesn't exist
@@ -392,11 +348,8 @@ def export_to_onnx(model, output_path, input_shape):
     
     return output_path
 
-
 def save_metadata(scaler, label_encoder, output_dir='models'):
-    """
-    Save preprocessing metadata for inference.
-    """
+    
     os.makedirs(output_dir, exist_ok=True)
     
     metadata = {
@@ -414,11 +367,8 @@ def save_metadata(scaler, label_encoder, output_dir='models'):
     
     print(f"✅ Metadata saved to {metadata_path}")
 
-
 def main():
-    """
-    Main training pipeline.
-    """
+    
     parser = argparse.ArgumentParser(description='Train MoodiQ-AI mood classification model')
     parser.add_argument('--dataset', type=str, default='mood_dataset.csv',
                         help='Path to dataset CSV file')
@@ -471,7 +421,6 @@ def main():
     print(f"  1. Copy {args.output} to your ML service models/ directory")
     print(f"  2. Start your ML service: uvicorn main:app --reload --port 8000")
     print(f"  3. Test predictions: curl http://localhost:8000/predict/track")
-
 
 if __name__ == '__main__':
     main()

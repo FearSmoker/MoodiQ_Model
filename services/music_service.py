@@ -66,9 +66,8 @@ FEATURE_KEYS = [
     "acousticness", "instrumentalness", "liveness", "valence",
     "tempo", "spec_rate", "key", "duration_ms"
 ]
-# Note: key & duration_ms are kept as integer/numeric metadata; model uses first 10 normalized features.
-NUM_MODEL_FEATURES = 10  # model expects 10 features (as in your model_service)
 
+NUM_MODEL_FEATURES = 10  # model expects 10 features (as in your model_service)
 
 # -------------------------
 # Last.fm lazy init
@@ -86,7 +85,7 @@ def _init_lastfm():
         print("⚠️ Last.fm key not found - tag lookups will be limited")
 
 async def get_lastfm_tags(track_name: str, artist_name: str) -> List[str]:
-    """Fetch top tags/genres for a song from Last.fm"""
+    
     _init_lastfm()
     api_key = os.getenv("API_KEY_LASTFM") or os.getenv("LASTFM_API_KEY")
     if not api_key:
@@ -117,13 +116,11 @@ async def get_lastfm_tags(track_name: str, artist_name: str) -> List[str]:
         
     return []
 
-
-
 # -------------------------
 # Helper utilities
 # -------------------------
 def _safe_mean(values: List[float]) -> float:
-    """Compute mean safely; return 0.0 if empty."""
+    
     if not values:
         return 0.0
     return float(np.mean(values))
@@ -143,7 +140,6 @@ def _ensure_spec_rate(features: Dict[str, Any]) -> None:
     if "spec_rate" not in features or features.get("spec_rate") is None:
         tempo = features.get("tempo", 120.0)
         features["spec_rate"] = _normalize_spec_rate_from_tempo(tempo)
-
 
 # -------------------------
 # YTMusic search (preserve)
@@ -177,7 +173,6 @@ async def search_tracks(query: str, limit: int = 20) -> List[Dict]:
         print(f"❌ YTMusic search error: {e}")
         return []
 
-
 async def get_track_info(track_id: Optional[str] = None, track_name: Optional[str] = None, artist_name: Optional[str] = None) -> Optional[Dict]:
     cache_key = f"ytmusic:track:{track_id or (track_name + ':' + (artist_name or ''))}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -208,7 +203,6 @@ async def get_track_info(track_id: Optional[str] = None, track_name: Optional[st
         print(f"❌ get_track_info error: {e}")
         return None
 
-
 # -------------------------
 # MusicBrainz -> MBID
 # -------------------------
@@ -228,7 +222,6 @@ async def get_musicbrainz_id(track_name: str, artist_name: str) -> Optional[str]
     except Exception as e:
         print(f"❌ MusicBrainz error: {e}")
         return None
-
 
 # -------------------------
 # AcousticBrainz -> Features
@@ -252,7 +245,6 @@ async def get_audio_features_from_mbid(mbid: str) -> Optional[Dict]:
     except Exception as e:
         print(f"❌ AcousticBrainz error: {e}")
         return None
-
 
 def _normalize_acousticbrainz_features(data: Dict) -> Dict:
     # Safe nested retrieval
@@ -303,7 +295,6 @@ def _normalize_acousticbrainz_features(data: Dict) -> Dict:
         print(f"❌ Error normalizing AcousticBrainz: {e}")
         return get_default_features()
 
-
 def get_default_features() -> Dict:
     base = {
         "danceability": 0.5, "energy": 0.5, "loudness": -10.0,
@@ -313,9 +304,8 @@ def get_default_features() -> Dict:
     }
     return base
 
-
 # -------------------------
-# High-level pipeline: get_audio_features (mbid -> acoustic -> gemini fallback)
+
 # -------------------------
 async def get_audio_features(
     track_name: str, 
@@ -324,16 +314,12 @@ async def get_audio_features(
     use_gemini_fallback: bool = True,
     access_token: Optional[str] = None
 ) -> Dict:
-    """
-    Return a normalized audio feature dict for a track.
-    Tries: Spotify API (if token provided) -> MusicBrainz MBID -> AcousticBrainz -> Gemini AI fallback -> defaults
-    """
+    
     cache_key = f"features:{track_name}:{artist_name}"
     cached = await cache_service.get_from_cache(cache_key)
     if cached:
         return cached
 
-    # Step 1: Try Spotify API (Preferred if token available)
     if access_token:
         try:
             print(f"🚀 Fetching audio features from Spotify: '{track_name}' by '{artist_name}'")
@@ -358,7 +344,6 @@ async def get_audio_features(
         except Exception as e:
             print(f"⚠️ Spotify features fetch failed, falling back: {e}")
 
-    # Step 2: Try MBID -> AcousticBrainz
     mbid = await get_musicbrainz_id(track_name, artist_name)
     if mbid:
         features = await get_audio_features_from_mbid(mbid)
@@ -368,7 +353,6 @@ async def get_audio_features(
             await cache_service.set_in_cache(cache_key, features, expiration=604800)
             return features
 
-    # Step 3: Gemini fallback
     if use_gemini_fallback:
         # try to find genre if missing
         if not genre:
@@ -387,24 +371,16 @@ async def get_audio_features(
         except Exception as e:
             print(f"⚠️ Gemini fallback error: {e}")
 
-    # Step 4: Final fallback
     fallback = get_default_features()
     _ensure_spec_rate(fallback)
     await cache_service.set_in_cache(cache_key, fallback, expiration=3600)
     return fallback
 
-
 # -------------------------
 # Playlist Aggregation (core)
 # -------------------------
 def aggregate_playlist_features(tracks: List[Dict]) -> Dict:
-    """
-    Compute accurate aggregated features for a playlist.
-
-    - For each numeric feature, compute mean across tracks that have that feature.
-    - For tempo/loudness conversion, preserve raw units; model_service.normalize_features handles mapping.
-    - Returns dictionary containing aggregated features and diagnostics (counts, stddev, diversity)
-    """
+    
     # Track features per key
     feature_vals = {k: [] for k in FEATURE_KEYS}
     sources = {}
@@ -428,7 +404,7 @@ def aggregate_playlist_features(tracks: List[Dict]) -> Dict:
 
     aggregated = {}
     diagnostics = {}
-    # compute mean & std and robust trimming for outliers (IQR trimming)
+    
     for k, vals in feature_vals.items():
         if not vals:
             # if nothing available, use conservative default
@@ -439,7 +415,6 @@ def aggregate_playlist_features(tracks: List[Dict]) -> Dict:
 
         arr = np.array(vals, dtype=float)
 
-        # Robust outlier trimming: remove extreme values outside 1.5*IQR
         q1 = np.percentile(arr, 25)
         q3 = np.percentile(arr, 75)
         iqr = q3 - q1
@@ -471,16 +446,11 @@ def aggregate_playlist_features(tracks: List[Dict]) -> Dict:
     }
     return aggregated
 
-
 # -------------------------
 # Playlist Mood Prediction (uses model_service)
 # -------------------------
 async def predict_playlist_mood_from_aggregated(aggregated_features: Dict, top_k: int = 3) -> Dict:
-    """
-    Given aggregated_features (dict), call model_service.predict_mood_single_track
-    to get up to top_k moods (model_service expects raw features mapping).
-    """
-    # model_service expects model_features keys as in MODEL_FEATURES; the model_service will normalize internals.
+
     # We call the model function and ensure structure.
     try:
         # model_service.predict_mood_single_track may be sync or async
@@ -518,18 +488,11 @@ async def predict_playlist_mood_from_aggregated(aggregated_features: Dict, top_k
             "source": "fallback_rule"
         }
 
-
 # -------------------------
 # Flow Optimizer
 # -------------------------
 def optimize_playlist_flow(tracks: List[Dict], progression: str = "gradual_rise") -> List[Dict]:
-    """
-    Reorder tracks to produce a smooth energy progression.
-    - Primary key: energy (ascending for 'gradual_rise')
-    - Secondary key: valence (ascending)
-    - Then perform a smoothing pass to minimize adjacent energy jumps
-    progression: 'gradual_rise' | 'gradual_fall' | 'steady' (steady = minimal reorder)
-    """
+    
     # Enrich features presence check
     enriched = []
     for t in tracks:
@@ -578,7 +541,6 @@ def optimize_playlist_flow(tracks: List[Dict], progression: str = "gradual_rise"
 
     return ordered
 
-
 # -------------------------
 # Recommendations via MongoDB vector search (top-N)
 # -------------------------
@@ -590,23 +552,13 @@ async def recommend_songs_by_playlist_vector(
     use_vector_search: bool = True,
     candidate_multiplier: int = 3
 ) -> List[Dict]:
-    """
-    Recommend songs by comparing aggregated_features vector against DB vectors.
 
-    - Tries MongoDB $vectorSearch aggregation stage when available.
-    - Fallback: fetch candidate set and compute cosine similarity in Python.
-    - limit: number of results to return (10-50 normally).
-    - aggregated_features: dict containing the same ordering of features as DB vectors.
-    """
-    # Build the query vector matching the DB vector format: required order should match how DB stored feature vectors.
-    # We'll create 10-d normalized vector consistent with model_service.normalize_features expectations
     try:
-        # Use model_service's normalization helper if available to get exact feature mapping
+        
         normalize_fn = getattr(model_service, "normalize_features_for_vector", None)
     except Exception:
         normalize_fn = None
 
-    # Construct a raw vector in a safe order for database: we will use the 10 model features in model_service.MODEL_FEATURES if available
     try:
         model_features = getattr(model_service, "MODEL_FEATURES", None)
         if model_features and isinstance(model_features, list) and len(model_features) >= 1:
@@ -684,7 +636,7 @@ async def recommend_songs_by_playlist_vector(
                 return [doc for _, doc in scores_sorted]
 
     except Exception as e:
-        # Likely no Atlas Search / $vectorSearch available - fallback
+        
         print(f"⚠️ MongoDB vector search not available or failed: {e}")
 
     # Fallback approach: coarse candidate fetch + in-memory cosine similarity.
@@ -716,13 +668,12 @@ async def recommend_songs_by_playlist_vector(
         print(f"❌ Recommendation fallback failed: {e}")
         return []
 
-
 # ============================================
 # Last.fm Integration (Tags, Recommendations, Similar Artists)
 # ============================================
 
 async def get_similar_tracks_lastfm(track_name: str, artist_name: str, limit: int = 20) -> List[Dict]:
-    """Get similar tracks for a track from Last.fm"""
+    
     _init_lastfm()
     cache_key = f"lastfm:similar:{track_name}:{artist_name}:{limit}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -770,7 +721,7 @@ async def get_similar_tracks_lastfm(track_name: str, artist_name: str, limit: in
     return []
 
 async def get_similar_artists_lastfm(artist_name: str, limit: int = 10) -> List[str]:
-    """Get similar artists for an artist from Last.fm"""
+    
     _init_lastfm()
     cache_key = f"lastfm:similar_artists:{artist_name}:{limit}"
     cached = await cache_service.get_from_cache(cache_key)
@@ -811,10 +762,7 @@ async def get_recommendations(
     limit: int = 20,
     access_token: Optional[str] = None
 ) -> List[Dict]:
-    """
-    Get track recommendations based on seed track and optional target mood.
-    Uses Last.fm similar tracks as candidates and filters by target mood.
-    """
+    
     print(f"🎯 Getting recommendations based on seed: {seed_track_name} by {seed_artist_name} (mood: {target_mood})")
     
     # Get similar tracks from Last.fm
@@ -854,7 +802,7 @@ async def get_recommendations(
     return recommendations
 
 def check_mood_match(features: Dict, target_mood: str) -> bool:
-    """Check if features match target mood"""
+    
     valence = features.get('valence', 0.5)
     energy = features.get('energy', 0.5)
     
@@ -869,14 +817,11 @@ def check_mood_match(features: Dict, target_mood: str) -> bool:
     else:
         return True  # No filtering
 
-
 # -------------------------
 # Batch helpers
 # -------------------------
 async def batch_get_audio_features(tracks: List[Dict], concurrency: int = 5) -> List[Dict]:
-    """
-    Fetch audio features for multiple tracks concurrently; returns list of feature dicts.
-    """
+    
     sem = asyncio.Semaphore(concurrency)
     async def _fetch(t):
         async with sem:
@@ -890,15 +835,11 @@ async def batch_get_audio_features(tracks: List[Dict], concurrency: int = 5) -> 
     results = await asyncio.gather(*tasks, return_exceptions=False)
     return results
 
-
 # -------------------------
 # Helper: enrich tracks with features & mood (useful for live queue)
 # -------------------------
 async def enrich_tracks_with_features_and_mood(tracks: List[Dict]) -> List[Dict]:
-    """
-    For each track in tracks (with keys: name, artist), fetch features and predict mood,
-    then attach 'features' and 'mood' fields in-place and return the list.
-    """
+    
     enriched = []
     for t in tracks:
         name = t.get("name")
@@ -911,7 +852,6 @@ async def enrich_tracks_with_features_and_mood(tracks: List[Dict]) -> List[Dict]
         t_out["mood"] = mood
         enriched.append(t_out)
     return enriched
-
 
 # -------------------------
 # Tests & debug harness
@@ -962,7 +902,6 @@ async def test_music_service():
 
     print("\n✅ Music service tests complete.")
     print("="*60)
-
 
 # If run as a script
 if __name__ == "__main__":

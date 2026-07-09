@@ -58,9 +58,8 @@ app.add_middleware(
 # --- Favicon handler to suppress 404 logs ---
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    """Suppress favicon.ico 404 requests"""
+    
     return Response(status_code=204)
-
 
 # ============================================
 # SPOTIFY EXCEPTION HANDLERS
@@ -68,7 +67,7 @@ def favicon():
 
 @app.exception_handler(SpotifyAuthError)
 async def spotify_auth_error_handler(request, exc):
-    """Global handler for Spotify authentication errors"""
+    
     return JSONResponse(
         status_code=401,
         content={
@@ -79,10 +78,9 @@ async def spotify_auth_error_handler(request, exc):
         }
     )
 
-
 @app.exception_handler(SpotifyRateLimitError)
 async def spotify_rate_limit_error_handler(request, exc):
-    """Global handler for Spotify rate limit errors"""
+    
     return JSONResponse(
         status_code=429,
         content={
@@ -95,10 +93,9 @@ async def spotify_rate_limit_error_handler(request, exc):
         headers={"Retry-After": str(exc.retry_after)}
     )
 
-
 @app.exception_handler(SpotifyNotFoundError)
 async def spotify_not_found_error_handler(request, exc):
-    """Global handler for Spotify resource not found errors"""
+    
     return JSONResponse(
         status_code=404,
         content={
@@ -108,10 +105,9 @@ async def spotify_not_found_error_handler(request, exc):
         }
     )
 
-
 @app.exception_handler(SpotifyServiceError)
 async def spotify_service_error_handler(request, exc):
-    """Global handler for general Spotify service errors"""
+    
     return JSONResponse(
         status_code=500,
         content={
@@ -121,14 +117,13 @@ async def spotify_service_error_handler(request, exc):
         }
     )
 
-
 # ============================================
 # STARTUP & SHUTDOWN EVENTS
 # ============================================
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize services on startup"""
+    
     print("=" * 80)
     print("🚀 Starting MoodiQ-AI ML Service v2.5.1 (HYBRID Edition)")
     print("=" * 80)
@@ -266,10 +261,9 @@ async def startup_event():
     print("   ML Model → Mood Prediction → Response")
     print("=" * 80 + "\n")
 
-
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
+    
     print("\n👋 Shutting down MoodiQ-AI ML Service...")
     
     try:
@@ -279,7 +273,6 @@ async def shutdown_event():
         print(f"⚠️ Error during Redis disconnect: {e}")
     
     print("✅ Shutdown complete")
-
 
 # ============================================
 # INCLUDE ROUTERS
@@ -315,14 +308,13 @@ app.include_router(
     tags=["Analytics & Insights"]
 )
 
-
 # ============================================
 # ROOT & INFO ENDPOINTS
 # ============================================
 
 @app.get("/")
 def read_root():
-    """Root endpoint with service information"""
+    
     return {
         "service": "MoodiQ-AI ML Service",
         "version": "2.5.1",
@@ -381,10 +373,9 @@ def read_root():
         ]
     }
 
-
 @app.get("/health")
 async def health_check():
-    """Comprehensive health check"""
+    
     redis_status = cache_service.redis_client is not None
     model_status = model_service.mood_model is not None
     ytmusic_status = music_service.ytmusic is not None
@@ -488,10 +479,9 @@ async def health_check():
     
     return JSONResponse(content=health_data, status_code=http_status)
 
-
 @app.get("/stats")
 async def get_service_stats():
-    """Get service statistics"""
+    
     try:
         cache_stats = {}
         if cache_service.redis_client:
@@ -555,10 +545,9 @@ async def get_service_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api-info")
 async def get_api_info():
-    """Get detailed API integration information"""
+    
     return {
         "service": "MoodiQ-AI ML Service v2.5.1",
         "approach": "HYBRID",
@@ -702,14 +691,13 @@ async def get_api_info():
         ]
     }
 
-
 # ============================================
 # NLP & UTILITY ENDPOINTS
 # ============================================
 
 @app.post("/nlp/command")
 async def process_nlp_command(request: dict):
-    """Process natural language commands"""
+    
     try:
         command = request.get('command', '').strip()
         context = request.get('context', {})
@@ -735,7 +723,6 @@ async def process_nlp_command(request: dict):
             "error": str(e)
         }
 
-
 # ============================================
 # GENERAL ERROR HANDLERS
 # ============================================
@@ -751,7 +738,6 @@ async def not_found_handler(request, exc):
         }
     )
 
-
 @app.exception_handler(500)
 async def internal_error_handler(request, exc):
     return JSONResponse(
@@ -762,7 +748,6 @@ async def internal_error_handler(request, exc):
             "timestamp": datetime.utcnow().isoformat()
         }
     )
-
 
 # ============================================
 # RUN APPLICATION

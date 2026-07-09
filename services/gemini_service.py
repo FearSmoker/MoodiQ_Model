@@ -20,8 +20,6 @@ from google import genai
 
 from . import cache_service
 
-
-# Gemini Configuration - Delay initialization
 # Initialize these at module level
 GEMINI_API_KEY = None
 _initialized = False
@@ -30,7 +28,7 @@ _initialized = False
 _client: Optional[genai.Client] = None
 
 # Default model preference (as of Nov 2025)
-# We'll also fallback to 1.5 if 2.5 isn't accessible for the key
+
 PRIMARY_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL_NAMES = [
     "gemini-1.5-flash",
@@ -50,7 +48,7 @@ def is_gemini_on_cooldown() -> bool:
     return time.time() < _gemini_cooldown_until
 
 def _init_gemini():
-    """Initialize Gemini API (called lazily on first use)"""
+    
     global GEMINI_API_KEY, _initialized, _client
     
     if _initialized:
@@ -72,12 +70,8 @@ def _init_gemini():
         print("⚠️  GEMINI_API_KEY not found in environment")
         print("   Set GEMINI_API_KEY (or GOOGLE_API_KEY) in your .env file to enable AI-powered feature estimation")
 
-
 def _extract_text_from_response(response) -> str:
-    """
-    Robustly extract plain text from google-genai responses.
-    Different SDK versions may expose .text or .output_text, or candidates.
-    """
+    
     if response is None:
         return ""
     # Preferred attributes
@@ -109,12 +103,8 @@ def _extract_text_from_response(response) -> str:
     except Exception:
         return ""
 
-
 def _call_gemini_generate(prompt: str) -> Optional[str]:
-    """
-    Call Gemini with primary model and fallbacks, return response text or None on failure.
-    Uses google-genai client.
-    """
+    
     global _client
     if not _client:
         return None
@@ -145,7 +135,7 @@ def _call_gemini_generate(prompt: str) -> Optional[str]:
             err_str = str(e).lower()
             if "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str:
                 mark_gemini_cooldown(60) # Place Gemini on a 60-second cooldown
-                # Since quota is exhausted across all models under the same API key, exit early
+                
                 return None
             print(f"⚠️ Gemini generate_content error with '{model_name}': {e}")
             continue
@@ -154,7 +144,6 @@ def _call_gemini_generate(prompt: str) -> Optional[str]:
         print(f"❌ Gemini generate_content failed on all models. Last error: {last_error}")
     return None
 
-
 async def estimate_audio_features_with_gemini(
     track_name: str,
     artist_name: str,
@@ -162,19 +151,7 @@ async def estimate_audio_features_with_gemini(
     genre: Optional[str] = None,
     lyrics_snippet: Optional[str] = None
 ) -> Optional[Dict]:
-    """
-    Use Gemini AI to estimate audio features when MBID/AcousticBrainz unavailable
     
-    Args:
-        track_name: Track name
-        artist_name: Artist name
-        album_name: Album name (optional, helps with context)
-        genre: Genre (optional, helps with estimation)
-        lyrics_snippet: First few lines of lyrics (optional, improves accuracy)
-        
-    Returns:
-        Estimated audio features dictionary in Spotify-like format
-    """
     # Initialize Gemini on first use
     _init_gemini()
     
@@ -227,7 +204,6 @@ async def estimate_audio_features_with_gemini(
         print(f"❌ Gemini feature estimation error: {e}")
         return None
 
-
 def build_feature_estimation_prompt(
     track_name: str,
     artist_name: str,
@@ -235,9 +211,7 @@ def build_feature_estimation_prompt(
     genre: Optional[str] = None,
     lyrics_snippet: Optional[str] = None
 ) -> str:
-    """
-    Build a detailed prompt for Gemini to estimate audio features
-    """
+    
     prompt = f"""You are an expert music analyst. Analyze the song and estimate its audio characteristics.
 
 Song Information:
@@ -314,11 +288,8 @@ Return ONLY valid JSON in this exact format (no markdown, no explanations):
     
     return prompt
 
-
 def parse_gemini_response(response_text: str) -> Optional[Dict]:
-    """
-    Parse Gemini's JSON response and validate features
-    """
+    
     try:
         # Remove markdown code blocks if present
         response_text = response_text.strip()
@@ -374,22 +345,11 @@ def parse_gemini_response(response_text: str) -> Optional[Dict]:
         print(f"❌ Error parsing Gemini response: {e}")
         return None
 
-
 async def batch_estimate_features(
     tracks: List[Dict],
     max_concurrent: int = 3
 ) -> List[Optional[Dict]]:
-    """
-    Estimate features for multiple tracks with Gemini
-    Rate-limited to avoid API throttling
     
-    Args:
-        tracks: List of dicts with 'name' and 'artist' keys
-        max_concurrent: Maximum concurrent API calls
-        
-    Returns:
-        List of feature dictionaries
-    """
     import asyncio
     
     # Initialize Gemini on first use
@@ -425,21 +385,11 @@ async def batch_estimate_features(
     
     return processed_results
 
-
 async def get_tags_with_gemini(
     track_name: str,
     artist_name: str
 ) -> List[str]:
-    """
-    Get genre/mood tags using Gemini as fallback for Last.fm
     
-    Args:
-        track_name: Track name
-        artist_name: Artist name
-        
-    Returns:
-        List of tags
-    """
     # Initialize Gemini on first use
     _init_gemini()
     
@@ -495,12 +445,8 @@ Return ONLY a JSON array of strings:
         print(f"❌ Gemini tags error: {e}")
         return []
 
-
 async def cleanup_gemini_cache():
-    """
-    Clean up temporary Gemini-generated features from cache
-    Useful for keeping cache size manageable
-    """
+    
     try:
         deleted = await cache_service.delete_pattern("gemini:*")
         print(f"🧹 Cleaned up {deleted} Gemini cache entries")
@@ -509,10 +455,9 @@ async def cleanup_gemini_cache():
         print(f"⚠️ Error cleaning up Gemini cache: {e}")
         return 0
 
-
 # Testing function
 async def test_gemini_service():
-    """Test Gemini feature estimation"""
+    
     print("\n" + "="*60)
     print("🧪 Testing Gemini AI Feature Estimation")
     print("="*60)
@@ -543,7 +488,6 @@ async def test_gemini_service():
     print("\n" + "="*60)
     print("✅ Testing complete!")
     print("="*60)
-
 
 if __name__ == "__main__":
     import asyncio

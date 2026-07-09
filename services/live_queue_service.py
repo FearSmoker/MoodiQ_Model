@@ -14,7 +14,7 @@ class LiveQueueService:
         self.mongo_client = None
         self.db = None
         self.collection = None
-        self.memory_cache = {}  # In-memory fallback cache to ensure functionality if Redis is offline/uninitialized
+        self.memory_cache = {}  
 
     async def _init_db(self):
         if self.mongo_client:

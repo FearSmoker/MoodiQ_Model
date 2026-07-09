@@ -56,7 +56,6 @@ from tqdm.asyncio import tqdm
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
-# This script lives at Model/populate_database.py; services/ is a sibling package.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from services import music_service  # noqa: E402  (MusicBrainz -> AcousticBrainz -> Gemini pipeline)
 
@@ -123,13 +122,11 @@ MOOD_GENRE_SEEDS = {
 }
 DEFAULT_GENRES = sorted({g for genres in MOOD_GENRE_SEEDS.values() for g in genres})
 
-
 # ============================================
 # MOOD MODEL (unchanged from the CSV version)
 # ============================================
 
 class MoodPredictor:
-    """ONNX model wrapper for mood prediction — same model, new data source."""
 
     def __init__(self, model_path: str, metadata_path: str):
         self.model_path = model_path
@@ -223,17 +220,12 @@ class MoodPredictor:
             'num_tags': len(mood_tags),
         }
 
-
 # ============================================
 # LIVE CATALOG DISCOVERY (replaces CSV loading)
 # ============================================
 
 def get_client_credentials_client() -> spotipy.Spotify:
-    """
-    App-only client (no user token needed) for catalog discovery.
-    NOTE: audio-features/recommendations are dead regardless of auth type —
-    this client is only used for /search, /artists/*, /albums/* below.
-    """
+    
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
     if not client_id or not client_secret:
@@ -241,18 +233,7 @@ def get_client_credentials_client() -> spotipy.Spotify:
     auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
     return spotipy.Spotify(auth_manager=auth_manager, requests_timeout=15, retries=3)
 
-
 class LiveCatalogDiscovery:
-    """
-    Pulls a fresh set of (track_name, artist_name, spotify_id, release info)
-    tuples from the live Spotify catalog:
-      1. Genre + year-windowed search (10 results/request cap -> paginate)
-      2. Deeper crawl: for artists surfaced by search, pull their albums
-         (GET /artists/{id}/albums) and those albums' tracks
-         (GET /albums/{id}/tracks) — this is what actually reaches "the 2026
-         catalog" instead of whatever generic search happens to rank first.
-    No batch endpoints are used anywhere here (they were removed Feb 2026).
-    """
 
     def __init__(self, sp: spotipy.Spotify, since_year: int = 2023):
         self.sp = sp
@@ -267,7 +248,7 @@ class LiveCatalogDiscovery:
             return None
 
     def discover_via_search(self, genres: List[str], target_count: int, max_offset: int = 190) -> List[Dict]:
-        """Genre + recency-windowed search, paginated 10 at a time (Feb 2026 cap)."""
+        
         results = []
         year_filter = f"year:{self.since_year}-2026"
 
@@ -293,12 +274,7 @@ class LiveCatalogDiscovery:
         return results
 
     def discover_via_artist_albums(self, seed_artist_ids: List[str], target_count: int) -> List[Dict]:
-        """
-        For each artist we've already found, pull their albums and those
-        albums' tracks. This is the main lever for reaching a given artist's
-        newest release, since /artists/{id}/top-tracks and
-        /browse/new-releases were both removed in Feb 2026.
-        """
+        
         results = []
         for artist_id in seed_artist_ids:
             if len(results) >= target_count:
@@ -364,7 +340,6 @@ class LiveCatalogDiscovery:
             'source_genre': source_genre,
         }
 
-
 # ============================================
 # DATABASE OPERATIONS (unchanged)
 # ============================================
@@ -424,7 +399,6 @@ class DatabasePopulator:
             self.client.close()
             print("\n✅ Database connection closed")
 
-
 class GracefulExit:
     def __init__(self):
         self.cancelled = False
@@ -438,19 +412,12 @@ class GracefulExit:
         print("\n🛑 Graceful stop requested — finishing current batch...")
         self.cancelled = True
 
-
 # ============================================
 # MAIN PIPELINE
 # ============================================
 
 def _fill_feature_defaults(features: Dict) -> Dict:
-    """
-    music_service.get_audio_features()'s Gemini/default fallback paths don't
-    always populate 'mode' and 'time_signature' (they're not part of that
-    pipeline's native output). The ONNX model needs all 12 REQUIRED_FEATURES,
-    so fill sane defaults rather than letting normalize_features silently
-    substitute 0.5 for a categorical field.
-    """
+    
     features = dict(features)
     features.setdefault('mode', 1)
     features.setdefault('time_signature', 4)
@@ -458,7 +425,6 @@ def _fill_feature_defaults(features: Dict) -> Dict:
         if name not in features or features[name] is None:
             features[name] = 0.5
     return features
-
 
 async def process_and_populate(
     target_count: int,
@@ -479,12 +445,10 @@ async def process_and_populate(
         print(f"❌ Error: Model not found: {MODEL_PATH}")
         sys.exit(1)
 
-    # 1. Load ML model
     print("\n📦 Step 1: Loading ML Model...")
     predictor = MoodPredictor(MODEL_PATH, METADATA_PATH)
     predictor.load()
 
-    # 2. Discover live catalog tracks
     print(f"\n📡 Step 2: Discovering live catalog (target={target_count:,}, since={since_year})...")
     sp = get_client_credentials_client()
     discovery = LiveCatalogDiscovery(sp, since_year=since_year)
@@ -502,7 +466,6 @@ async def process_and_populate(
         sys.exit(1)
     print(f"✅ Total discovered: {len(catalog):,} tracks")
 
-    # 3. Connect to MongoDB
     print("\n🔌 Step 3: Connecting to MongoDB...")
     db_populator = DatabasePopulator(MONGO_URI, DATABASE_NAME, COLLECTION_NAME)
     await db_populator.connect()
@@ -510,7 +473,6 @@ async def process_and_populate(
 
     existing_ids = await db_populator.get_existing_track_ids() if skip_existing else set()
 
-    # 4. Fetch real audio features (MusicBrainz -> AcousticBrainz -> Gemini)
     #    and run mood prediction, with bounded concurrency since this hits
     #    three external services per track.
     print("\n🔮 Step 4: Fetching real audio features + predicting moods...")
@@ -630,7 +592,6 @@ async def process_and_populate(
 
     await db_populator.close()
 
-
 # ============================================
 # CLI
 # ============================================
@@ -663,7 +624,6 @@ def main():
         concurrency=args.concurrency,
         skip_existing=not args.no_skip_existing,
     ))
-
 
 if __name__ == "__main__":
     try:

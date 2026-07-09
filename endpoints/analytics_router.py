@@ -11,13 +11,9 @@ from typing import Dict, List, Optional
 
 router = APIRouter()
 
-
 @router.get("/user/{user_id}/timeline")
 async def get_mood_timeline(user_id: str, days: int = 7):
-    """
-    Get user's mood trends over time - NOW WITH 12 MOODS
-    Uses cached mood predictions with multi-tag support
-    """
+    
     try:
         print(f"📊 Generating mood timeline for user {user_id} (last {days} days)")
         
@@ -65,7 +61,7 @@ async def get_mood_timeline(user_id: str, days: int = 7):
                     if not data or not isinstance(data, dict):
                         continue
                     ttl = await cache_service.get_ttl(key)
-                    # Better estimate: 86400s total TTL, so elapsed = 86400 - ttl
+                    
                     elapsed = max(0, 86400 - ttl) if ttl > 0 else 0
                     timestamp = datetime.now() - timedelta(seconds=elapsed)
                     mood_data = data.get('mood', {})
@@ -91,8 +87,7 @@ async def get_mood_timeline(user_id: str, days: int = 7):
         # Check unique days
         unique_days = {entry['timestamp'][:10] for entry in mood_history}
         group_by_time = len(unique_days) <= 1
-        
-        # Aggregate by day or time - NOW WITH 12 MOODS
+
         daily_moods = defaultdict(lambda: {mood: 0 for mood in model_service.ALL_MOOD_LABELS})
         daily_tracks = defaultdict(list)
         
@@ -189,13 +184,9 @@ async def get_mood_timeline(user_id: str, days: int = 7):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/user/{user_id}/mood-distribution")
 async def get_mood_distribution(user_id: str):
-    """
-    Get overall mood distribution for user - 12 MOODS
-    Shows which moods user listens to most
-    """
+    
     try:
         print(f"📊 Analyzing mood distribution for user {user_id}")
         
@@ -284,13 +275,9 @@ async def get_mood_distribution(user_id: str):
         print(f"❌ Error getting mood distribution: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/user/{user_id}/mood-patterns")
 async def get_mood_patterns(user_id: str):
-    """
-    Analyze mood listening patterns - 12 MOODS
-    Shows which moods tend to appear together (multi-tag co-occurrence)
-    """
+    
     try:
         print(f"🔍 Analyzing mood patterns for user {user_id}")
         
@@ -370,13 +357,9 @@ async def get_mood_patterns(user_id: str):
         print(f"❌ Error analyzing mood patterns: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/user/{user_id}/feedback-stats")
 async def get_feedback_stats(user_id: str):
-    """
-    Get user feedback statistics - UPDATED FOR 12 MOODS
-    Shows how user corrections impact the model
-    """
+    
     try:
         user_stats_key = f"user_stats:{user_id}"
         user_stats = await cache_service.get_from_cache(user_stats_key)
@@ -423,13 +406,9 @@ async def get_feedback_stats(user_id: str):
         print(f"❌ Error getting feedback stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/global/mood-trends")
 async def get_global_mood_trends(limit: int = 100):
-    """
-    Get global mood trends across all users - 12 MOODS
-    Shows most popular moods overall
-    """
+    
     try:
         print(f"🌍 Analyzing global mood trends")
         
@@ -502,10 +481,9 @@ async def get_global_mood_trends(limit: int = 100):
         print(f"❌ Error getting global trends: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/health")
 async def health_check():
-    """Health check for analytics service"""
+    
     return {
         "status": "healthy",
         "service": "analytics",
