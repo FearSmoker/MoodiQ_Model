@@ -8,49 +8,46 @@ A FastAPI Python service that powers all machine learning and AI capabilities of
 
 ```mermaid
 graph TD
+    %% Caller
     Backend["MoodIQ Backend (Node.js)"]
 
-    subgraph MLService ["ML Service (FastAPI / Python)"]
-        App["main.py (FastAPI App)"]
+    %% App Entry
+    App["main.py (FastAPI App)"]
 
-        subgraph Endpoints ["Endpoint Routers"]
-            MoodR["mood_router.py"]
-            OptimizeR["optimize_router.py"]
-            GenerateR["generate_router.py"]
-            AnalyticsR["analytics_router.py"]
-            TrainR["train_router.py"]
-            LiveR["live_listening_router.py"]
-        end
+    %% Endpoint Routers
+    MoodR["mood_router.py"]
+    OptimizeR["optimize_router.py"]
+    GenerateR["generate_router.py"]
+    AnalyticsR["analytics_router.py"]
+    TrainR["train_router.py"]
+    LiveR["live_listening_router.py"]
 
-        subgraph Services ["Services"]
-            ModelSvc["model_service.py (ONNX Inference)"]
-            SpotifySvc["spotify_service.py (Spotify OAuth + API)"]
-            MusicSvc["music_service.py (YTMusic + MusicBrainz)"]
-            GeminiSvc["gemini_service.py (Gemini Pro API)"]
-            LyricsSvc["lyrics_service.py (Genius + TextBlob)"]
-            PlaylistAn["playlist_analyzer.py (Flow Analysis)"]
-            NLPSvc["nlp_service.py (Intent Parsing)"]
-            CacheSvc["cache_service.py (Redis)"]
-            DBRecoSvc["db_recommendation_service.py (MongoDB)"]
-            LiveQSvc["live_queue_service.py (Live Session Queue)"]
-        end
+    %% Services
+    ModelSvc["model_service.py (ONNX Inference)"]
+    SpotifySvc["spotify_service.py (Spotify OAuth + API)"]
+    MusicSvc["music_service.py (YTMusic + MusicBrainz)"]
+    GeminiSvc["gemini_service.py (Gemini Pro API)"]
+    LyricsSvc["lyrics_service.py (Genius + TextBlob)"]
+    PlaylistAn["playlist_analyzer.py (Flow Analysis)"]
+    NLPSvc["nlp_service.py (Intent Parsing)"]
+    CacheSvc["cache_service.py (Redis)"]
+    DBRecoSvc["db_recommendation_service.py (MongoDB)"]
+    LiveQSvc["live_queue_service.py (Live Session Queue)"]
 
-        subgraph Models ["Trained Models"]
-            ONNX["moodiq_v4.onnx (12-class mood classifier)"]
-            Meta["model_metadata.json (scaler params, class labels)"]
-        end
-    end
+    %% Trained Models
+    ONNX["moodiq_v4.onnx (12-class mood classifier)"]
+    Meta["model_metadata.json (scaler params, class labels)"]
 
-    subgraph External ["External APIs"]
-        Spotify["Spotify Web API"]
-        YTMusic["YouTube Music API"]
-        MusicBrainz["MusicBrainz / AcousticBrainz"]
-        Genius["Genius API"]
-        GeminiAPI["Gemini Pro API"]
-        Redis["Redis Cache"]
-        MongoDB["MongoDB Atlas"]
-    end
+    %% External APIs
+    Spotify["Spotify Web API"]
+    YTMusic["YouTube Music API"]
+    MusicBrainz["MusicBrainz / AcousticBrainz"]
+    Genius["Genius API"]
+    GeminiAPI["Gemini Pro API"]
+    Redis["Redis Cache"]
+    MongoDB["MongoDB Atlas"]
 
+    %% Connections
     Backend --> App
 
     App --> MoodR
@@ -84,13 +81,15 @@ graph TD
     LiveR --> LiveQSvc
     LiveR --> ModelSvc
 
+    LyricsSvc --> Genius
+    LyricsSvc --> GeminiSvc
+
     ModelSvc --> ONNX
     ModelSvc --> Meta
 
     SpotifySvc --> Spotify
     MusicSvc --> YTMusic
     MusicSvc --> MusicBrainz
-    LyricsSvc --> Genius
     GeminiSvc --> GeminiAPI
     CacheSvc --> Redis
     DBRecoSvc --> MongoDB
@@ -116,8 +115,8 @@ graph TD
 ### 3. Flow Optimization
 - `playlist_analyzer.py` computes a mood transition graph for the current track order.
 - Identifies abrupt transitions and mood gaps based on feature distance thresholds.
-- AI reordering: uses dynamic programming and Gemini Pro to propose an optimal track sequence that flows from a user-defined start mood to end mood.
-- Gap filling: searches Spotify for bridge tracks whose audio features sit between two incompatible adjacent moods.
+- AI reordering uses dynamic programming and Gemini Pro to propose an optimal track sequence that flows from a user-defined start mood to end mood.
+- Gap filling searches Spotify for bridge tracks whose audio features sit between two incompatible adjacent moods.
 
 ### 4. Playlist Generation
 - Generates playlists from a target mood, activity type, or natural language description.
